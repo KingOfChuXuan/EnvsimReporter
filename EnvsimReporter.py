@@ -3,9 +3,8 @@
 """OpenMM reporter for PLUMED's ``ENVIRONMENTSIMILARITY`` collective variable.
 
 The reporter reproduces the per-atom environment-similarity kernel of PLUMED 2.10
-(``src/envsim/EnvironmentSimilarity.cpp``) without adding a ``PlumedForce`` to the
-System.  It is evaluated only on report frames, and it computes values only (no
-derivatives), so it does not slow down the MD loop.
+(``src/envsim/EnvironmentSimilarity.cpp``).  The values are evaluated on report
+frames, so the MD loop keeps its normal speed.
 
 The CV implemented here is
 
@@ -20,13 +19,13 @@ the values are combined with the soft-max
 
 If ``r0`` is given, the PLUMED ``MORE_THAN={RATIONAL R_0=r0 NN=nn MM=mm}`` soft
 count is also written as ``n_ice``.  This is the quantity used by the phase-diagram
-workflow; it is *not* a hard count of ``k_i > r0``.
+workflow.
 
 Typical use::
 
-    from ENVIRONMENTSIMILARITYReporter import ENVIRONMENTSIMILARITYReporter
+    from EnvsimReporter import EnvsimReporter
 
-    reporter = ENVIRONMENTSIMILARITYReporter(
+    reporter = EnvsimReporter(
         file='env.dat',
         interval=1000,
         references=['ref1.pdb', 'ref2.pdb', 'ref3.pdb', 'ref4.pdb'],
@@ -53,7 +52,7 @@ from scipy.spatial import cKDTree
 from openmm.unit import kelvin, nanometer, picosecond
 
 __all__ = [
-    "ENVIRONMENTSIMILARITYReporter",
+    "EnvsimReporter",
     "compute_environment_similarity",
     "more_than_count",
     "read_reference_pdb",
@@ -68,10 +67,10 @@ def read_reference_pdb(path: str | os.PathLike) -> np.ndarray:
     """Read one reference environment from a PLUMED-style PDB file.
 
     PLUMED reference PDB files contain the *displacement vectors* from the
-    central atom to its neighbours, in Angstrom.  Only the first model is read.
-    The parser is intentionally manual: ``openmm.app.PDBFile`` collapses atoms
-    that share a serial number, which silently turns a 4-atom reference file
-    into a 1-atom one.
+    central atom to its neighbours, in Angstrom.  The first model is read.
+    The parser reads fixed PDB columns directly; ``openmm.app.PDBFile`` collapses
+    atoms that share a serial number, which silently turns a 4-atom reference
+    file into a 1-atom one.
 
     Returns
     -------
@@ -376,7 +375,7 @@ def compute_environment_similarity(
     for m, ref in enumerate(refs):
         ref_norm2 = np.einsum("ij,ij->i", ref, ref)
         # The kernel is orientation-dependent: the environment of atom j sees
-        # -d, not d.  Compute both directions for every i<j pair.
+        # -d.  Compute both directions for every i<j pair.
         dot = d @ ref.T
         d2_forward = r2[:, None] + ref_norm2[None, :] - 2.0 * dot
         d2_backward = r2[:, None] + ref_norm2[None, :] + 2.0 * dot
@@ -434,14 +433,14 @@ def more_than_count(
     return float(np.sum(1.0 - s))
 
 
-class ENVIRONMENTSIMILARITYReporter:
+class EnvsimReporter:
     """OpenMM reporter that writes the ENVIRONMENTSIMILARITY CV.
 
     Parameters
     ----------
     file : str, path-like or None
-        Main output file.  If ``None``, no summary file is written (the values
-        are still available as attributes after each report).
+        Main output file.  If ``None``, the values are available as reporter
+        attributes after each report.
     interval : int
         Report interval in MD steps.  This is user-controlled: use a small
         value (e.g. 100) while calibrating ``r0``, and a larger value (e.g.
@@ -467,10 +466,10 @@ class ENVIRONMENTSIMILARITYReporter:
     water_names : sequence of str
         Residue names used by the automatic oxygen selection.
     per_atom_file : str, path-like, None or False
-        Per-atom output file.  ``None`` means: write ``<file>_env.dat`` when
-        ``r0 is None``, otherwise write nothing.  ``False`` disables it.
+        Per-atom output file.  ``None``: automatic (``<file>_env.dat`` in
+        calibration mode); ``False``: write the summary file; path: write there.
     append : bool
-        Append instead of overwriting (no headers are written when appending).
+        Extend existing files; headers are written for new files.
     time_unit : {'ns', 'ps'}
         Time unit of the output files.  Default ``'ns'``.
     normalization : {'per_reference', 'plumed'}

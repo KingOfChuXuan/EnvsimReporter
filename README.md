@@ -1,14 +1,13 @@
-# ENVIRONMENTSIMILARITYReporter
+# EnvsimReporter
 
 OpenMM reporter that reproduces PLUMED's `ENVIRONMENTSIMILARITY` collective variable
-and the `MORE_THAN` soft count `n_ice`, but computes them **only on report frames**
-and **without derivatives**.  It is intended as a drop-in monitoring tool for the
-water phase-diagram workflow: use it to decide whether a coexistence box is freezing
-or melting, without paying the `PlumedForce` cost on every MD step.
+and the `MORE_THAN` soft count `n_ice`.  The values are evaluated on report frames,
+so the MD loop keeps its normal speed.  It is a monitoring tool for the water
+phase-diagram workflow: use it to decide whether a coexistence box is freezing or
+melting.
 
 - `env.N` / `env_mean`: PLUMED `ENVIRONMENTSIMILARITY` (per-atom and mean).
-- `n_ice`: PLUMED `MORE_THAN={RATIONAL R_0=... NN=8 MM=16}` (soft count, not a hard
-  count of `env > R_0`).
+- `n_ice`: PLUMED `MORE_THAN={RATIONAL R_0=... NN=8 MM=16}` soft count.
 - `interval`, `r0`, references and output paths are all user-controlled.
 
 The implementation follows PLUMED 2.10
@@ -20,16 +19,14 @@ were checked against the existing `phase_diagram` trajectories (see
 
 ## Installation
 
-The reporter itself needs only:
+Dependencies:
 
 ```bash
 pip install numpy scipy openmm
 ```
 
-`MDAnalysis` is needed only by the optional DCD replay test.
-
-Place `ENVIRONMENTSIMILARITYReporter.py` anywhere on `PYTHONPATH`, or copy it next
-to your run script.
+Place `EnvsimReporter.py` anywhere on `PYTHONPATH`, or copy it next to your run
+script.
 
 ---
 
@@ -37,19 +34,19 @@ to your run script.
 
 ### 1. Calibration run: determine `R_0`
 
-`R_0` depends on the phase, the reference environments and the water model.  Do not
-copy it blindly.  Run a **short** pure-ice and pure-water simulation with `r0=None`;
-the reporter then writes a per-atom file by default:
+`R_0` depends on the phase, the reference environments and the water model.
+Calibrate it for each phase and box.  Run a **short** pure-ice and pure-water
+simulation with `r0=None`; the reporter then writes a per-atom file by default:
 
 ```python
-from ENVIRONMENTSIMILARITYReporter import ENVIRONMENTSIMILARITYReporter
+from EnvsimReporter import EnvsimReporter
 
-reporter = ENVIRONMENTSIMILARITYReporter(
+reporter = EnvsimReporter(
     file='calib.dat',
     interval=100,                 # short interval for calibration
     references=['ref1.pdb', 'ref2.pdb', 'ref3.pdb', 'ref4.pdb'],
     sigma=0.05,                   # nm, same as PLUMED SIGMA
-    r0=None,                      # no n_ice yet
+    r0=None,                      # calibration mode
 )
 simulation.reporters.append(reporter)
 ```
@@ -59,8 +56,8 @@ This writes:
 - `calib.dat`: `#Step  Time(ns)  Temperature(K)  env_mean`
 - `calib_env.dat`: `time env.1 env.2 ... env.N` (one row per frame)
 
-The per-atom file has a plain text header (`time env.1 ... env.N`, no `#! FIELDS`)
-so the columns line up with the header.  Read it with:
+The per-atom file has a plain text header (`time env.1 ... env.N`) so the columns
+line up with the header.  Read it with:
 
 ```python
 import pandas as pd
@@ -69,15 +66,16 @@ values = df.iloc[:, 1:].to_numpy()   # shape (n_frames, n_oxygen)
 ```
 
 Plot the ice and water distributions and choose `R_0` (e.g. the value maximizing
-Youden's J, or a value between the two distributions).  The PLUMED `n_ice` is a
-**soft** count: a molecule exactly at `R_0` contributes 0.5, and a typical ice
-molecule (`env ≈ 0.88` with `R_0 = 0.65`) contributes ≈0.92, not 1.  This is why
-pure ice gives `n_ice ≈ 0.91 N`, not `N`.
+Youden's J, or a value between the two distributions).  The PLUMED `n_ice` uses
+the `RATIONAL` switching function: a molecule exactly at `R_0` contributes 0.5,
+and a typical ice molecule (`env ≈ 0.88` with `R_0 = 0.65`) contributes ≈0.92.
+Consequently, pure ice gives `n_ice ≈ 0.91 N` and pure water gives a small
+baseline.
 
 ### 2. Production run
 
 ```python
-reporter = ENVIRONMENTSIMILARITYReporter(
+reporter = EnvsimReporter(
     file='env.dat',
     interval=1000,                # production: 1000 steps is enough
     references=['ref1.pdb', 'ref2.pdb', 'ref3.pdb', 'ref4.pdb'],
@@ -96,8 +94,7 @@ simulation.reporters.append(reporter)
 2000    2.000000   273.00           0.875012   387.920300
 ```
 
-Use it for early stopping in the driver (the reporter itself never stops the
-simulation):
+Early stopping is handled by the driver:
 
 ```python
 if reporter.n_ice <= L or reporter.n_ice >= U:
@@ -108,12 +105,11 @@ reporter.env_mean   # float
 reporter.env        # numpy array of per-oxygen values (last frame)
 ```
 
-If you also want the per-atom values during production, pass
-`per_atom_file='env_per_atom.dat'`.  By default (`r0` given, `per_atom_file=None`)
-no per-atom file is written.
+For per-atom values during production, pass
+`per_atom_file='env_per_atom.dat'`.  The default (`r0` given,
+`per_atom_file=None`) produces the summary file.
 
-If you want to append to existing files after a restart, pass `append=True`
-(headers are not rewritten).
+To extend existing files after a restart, pass `append=True`.
 
 ---
 
@@ -121,18 +117,18 @@ If you want to append to existing files after a restart, pass `append=True`
 
 | parameter | default | meaning |
 |---|---|---|
-| `file` | required | main summary file; `None` = no summary file |
+| `file` | required | main summary file; `None` = values available as attributes |
 | `interval` | required | report interval in MD steps; user-controlled |
 | `references` | required | list of reference PDB files (displacement vectors, Å) |
 | `sigma` | `0.05` | PLUMED `SIGMA`, in **nm** (0.05 nm = 0.5 Å) |
 | `cutoff` | `3.0` | PLUMED `CUTOFF`: `r_cut = max|r0| + cutoff*sigma` |
 | `lam` | `100.0` | PLUMED `LAMBDA` soft-max parameter |
-| `r0` | `None` | PLUMED `MORE_THAN` `R_0`; `None` disables `n_ice` and enables the per-atom file |
+| `r0` | `None` | PLUMED `MORE_THAN` `R_0`; `None` runs in calibration mode and writes per-atom `env.N` |
 | `nn`, `mm` | `8`, `16` | PLUMED `MORE_THAN={RATIONAL ...}` (mm=0 means 2*nn) |
 | `group` | `None` | 0-based atom indices; default = O atoms of water residues |
 | `water_names` | `('HOH','WAT','SOL','TIP3','TIP3P','SPC','SPCE')` | residue names for automatic O selection |
-| `per_atom_file` | `None` | `None`: auto when `r0 is None`, off otherwise; `False`: disable; path: enable |
-| `append` | `False` | append instead of overwrite (no headers) |
+| `per_atom_file` | `None` | `None`: automatic (per-atom in calibration mode); `False`: summary file; path: write there |
+| `append` | `False` | extend existing files |
 | `time_unit` | `'ns'` | output time unit (`'ns'` or `'ps'`) |
 | `normalization` | `'per_reference'` | `'per_reference'` (correct) or `'plumed'` (PLUMED's first-reference convention) |
 
@@ -147,17 +143,16 @@ If you want to append to existing files after a restart, pass `append=True`
 
 By default the reporter selects all oxygen atoms whose residue name is in
 `water_names` (using the element symbol when available, otherwise the atom name).
-If your topology is unusual, pass the exact **0-based** OpenMM particle indices:
+For an unusual topology, pass the exact **0-based** OpenMM particle indices:
 
 ```python
 group = [atom.index for atom in topology.atoms()
          if atom.residue.name == 'HOH' and atom.element.symbol == 'O']
-reporter = ENVIRONMENTSIMILARITYReporter(..., group=group)
+reporter = EnvsimReporter(..., group=group)
 ```
 
-The same group is used as centres and as neighbours, matching
-`SPECIES=...` in PLUMED.  For `SPECIESA/SPECIESB` or `ATOM_NAMES_FILE`, this
-reporter is not the right tool (it would need a species-aware kernel).
+The kernel is single-species: the same group supplies centres and neighbours,
+matching `SPECIES=...` in PLUMED.
 
 ---
 
@@ -195,7 +190,7 @@ PRINT ARG=env.mean,env.morethan FILE=colvar STRIDE=100
 corresponds to:
 
 ```python
-ENVIRONMENTSIMILARITYReporter(
+EnvsimReporter(
     file='env.dat', interval=100,
     references=['ref1.pdb', 'ref2.pdb', 'ref3.pdb', 'ref4.pdb'],
     sigma=0.05, cutoff=3.0, lam=100.0,
@@ -219,10 +214,9 @@ ATOM      4    O MOL     1       1.310   0.916   2.248  1.00  0.00           O
 ENDMDL
 ```
 
-The parser is deliberately manual (fixed PDB columns 31–54) and does **not** use
-`openmm.app.PDBFile`: OpenMM's PDB reader collapses atoms that share a serial
-number, which silently turns the 4-atom `ref1.pdb` into a 1-atom reference.  Only
-the first `MODEL` is read.
+The parser reads fixed PDB columns 31–54 directly and uses the first `MODEL`.
+OpenMM's PDB reader collapses atoms that share a serial number, which would turn
+the 4-atom `ref1.pdb` into a 1-atom reference.
 
 ---
 
@@ -246,11 +240,12 @@ diagrams all `ref*.pdb` of a given phase have the same number of atoms (Ih: 4,
 II: 5, ...), so the two choices are identical.
 
 This reporter defaults to `normalization='per_reference'` (the mathematically
-correct generalization) and warns if the reference sizes differ.  Use
-`normalization='plumed'` if you need strict bug-for-bug compatibility with a
-mixed-size reference set.  For equal-size references — the normal case — the two
-are numerically identical, and the validation below uses `'plumed'` to compare
-directly with the PLUMED output.
+correct generalization) and warns if the reference sizes differ.  To mirror
+PLUMED's code exactly — for example when comparing against an existing `colvar`
+file — pass `normalization='plumed'`.  For equal-size references, which is the
+case for the current water phases, the default already produces identical
+numbers; the choice matters only when template sizes differ.  The validation
+below uses `'plumed'` to compare directly with the PLUMED output.
 
 ---
 
@@ -266,8 +261,8 @@ Tab-separated, one row per report:
 
 - `Time(ns)`: default `ns`; use `time_unit='ps'` to match PLUMED colvar exactly.
 - `Temperature(K)`: from `integrator.getTemperature()`; if unavailable, `\`.
-- `n_ice`: only present when `r0` is given.
-- No volume column: use `StateDataReporter(volume=True)` if you need it.
+- `n_ice`: written when `r0` is given.
+- Volume: add `StateDataReporter(volume=True)` to the simulation.
 
 ### Per-atom file
 
@@ -278,19 +273,19 @@ time env.1 env.2 ... env.N
 0.000005 0.951399 0.878237 ...
 ```
 
-- Plain header, no `#! FIELDS`, so `pandas.read_table(..., sep=' ')` gives columns
-  that match the header exactly.
+- The header is plain text, so `pandas.read_table(..., sep=' ')` gives columns
+  that match it exactly.
 - `env.i` follows the order of the selected atoms (the same order as `reporter._ids`
   / the `group` you passed).  For the default selection this is the order of the
   oxygen atoms in the topology.
-- Only written when `r0 is None` (auto) or when `per_atom_file` is explicitly given.
+- Written when `r0 is None` (automatic) or when `per_atom_file` is explicitly given.
 
 ---
 
 ## Performance
 
-Measured with the corrected kernel (both directions per pair, which is required
-because the CV is orientation-dependent) on random liquid configurations at
+Measured with the corrected kernel (both directions per pair, required because
+the CV is orientation-dependent) on random liquid configurations at
 33.4 molecules/nm³, single process, `scipy.spatial.cKDTree`:
 
 | O atoms | references | ms/frame |
@@ -308,18 +303,19 @@ At 100 ns/day (≈1.16 ps/s):
 | 1280 O, 4 ref | ~6.7% | ~1.3% | ~0.7% |
 | 1280 O, 10 ref | ~13.7% | ~2.7% | ~1.4% |
 
-Use `interval=1000` in production and `interval=100` only for calibration.  For
+Use `interval=1000` in production and `interval=100` for calibration.  For
 8000-oxygen systems, use `interval>=1000` (or `5000`) to keep the overhead small.
 
-The reporter requests only `positions` from the State (no forces, energies or
-velocities), and computes no derivatives.
+The State request contains positions; the reporter computes the values on the CPU
+and leaves forces, energies and velocities in the simulation.
 
 ---
 
 ## Validation
 
 `tests/validate_against_plumed.py` replays the existing DCD trajectories and
-compares with the PLUMED `colvar` files:
+compares with the PLUMED `colvar` files.  The replay test uses MDAnalysis to read
+the DCD files.
 
 | system | box | references | `max|Δ env|` | `max|Δ env_mean|` | `max|Δ n_ice|` |
 |---|---|---|---|---|
@@ -327,9 +323,9 @@ compares with the PLUMED `colvar` files:
 | Ih water, 10 frames | orthorhombic | 4 × 4 atoms | 1.6e-6 | — | — |
 | II ice, 10 frames | **triclinic** | 12 × 5 atoms | — | 4.4e-7 | 1.3e-5 |
 
-The deviations are limited by the DCD single-precision coordinates and by the
-6-decimal `colvar` output, not by the algorithm.  `tests/test_pbc.py` also checks
-the orthorhombic and triclinic neighbour search against the brute-force `O(N²)`
+The deviations come from the DCD single-precision coordinates and the 6-decimal
+`colvar` output; the algorithm itself agrees.  `tests/test_pbc.py` also checks the
+orthorhombic and triclinic neighbour search against the brute-force `O(N²)`
 implementation (max difference ≈2e-15) and the normalization/switch edge cases.
 
 Run:
@@ -343,24 +339,25 @@ python tests/validate_against_plumed.py
 
 ## Notes and pitfalls
 
-1. **`n_ice` is soft.**  Do not replace it with `sum(env > r0)`; the thresholds
-   calibrated with PLUMED (`60/640`, etc.) assume the `RATIONAL` switch.  A value
-   exactly at `R_0` contributes 0.5, and values above `R_0` contribute less than 1
-   until `r = (1e-5)^(1/(NN-MM)) * R_0` (≈4.217 R0 for NN=8, MM=16).
+1. **`n_ice` uses the RATIONAL switch.**  The phase-diagram thresholds calibrated
+   with PLUMED (`60/640`, etc.) assume this definition.  A value exactly at `R_0`
+   contributes 0.5, and values above `R_0` contribute less than 1 until
+   `r = (1e-5)^(1/(NN-MM)) * R_0` (≈4.217 R0 for NN=8, MM=16).
 2. **The CV is orientation-dependent.**  The kernel uses the vector components
-   `(x, y, z)`, not a rotational invariant.  The four Ih references correspond to
-   four orientations; keep all of them.
+   `(x, y, z)`; the four Ih references cover four orientations, so keep all of
+   them.
 3. **Neighbour cutoff.**  `r_cut = max|r0| + 3σ`; for Ih σ=0.05 nm this is
-   ≈0.43 nm, for II ≈0.47 nm.  Do not replace it with a fixed 3.5 Å.
-4. **`SPECIES` selects both centres and neighbours.**  H atoms are not involved.
+   ≈0.43 nm, for II ≈0.47 nm.
+4. **`SPECIES` supplies both centres and neighbours.**  Only O atoms enter the
+   kernel.
 5. **Time unit.**  Output is in `ns` by default; PLUMED's `colvar` is in `ps`.
-   Use `time_unit='ps'` if you want to compare files directly.
+   Use `time_unit='ps'` to compare files directly.
 6. **Group indices are 0-based** (OpenMM convention).  PLUMED's `SPECIES=1-1296:3`
    is 1-based.
-7. **Periodic systems only.**  The reporter requires valid periodic box vectors.
-8. **Reference PDB parsing.**  Manual parser; see the note above about duplicate
-   serial numbers.
-9. **No early stopping.**  The reporter only exposes `reporter.n_ice`; the driver
-   decides when to stop.
-10. **No volume output.**  Use `StateDataReporter(volume=True)` in the same
-    simulation; both reporters share the same State request.
+7. **Periodic systems.**  The reporter requires valid periodic box vectors.
+8. **Reference PDB parsing.**  The parser reads fixed columns directly; see the
+   note above about duplicate serial numbers.
+9. **Early stopping.**  Read `reporter.n_ice` in the driver and stop when it
+   crosses your threshold.
+10. **Volume.**  Add `StateDataReporter(volume=True)`; both reporters share the
+    same State request.
