@@ -129,8 +129,6 @@ def _box_widths(box: np.ndarray) -> np.ndarray:
     """Perpendicular widths of the three pairs of box faces, in nm."""
     a, b, c = box
     volume = abs(float(np.dot(a, np.cross(b, c))))
-    if volume <= 0.0:
-        raise ValueError("periodic box vectors are singular (non-positive volume)")
     widths = np.array(
         [
             volume / np.linalg.norm(np.cross(b, c)),
@@ -140,6 +138,17 @@ def _box_widths(box: np.ndarray) -> np.ndarray:
         dtype=np.float64,
     )
     return widths
+
+
+def _expand_neighbour_lists(neighbours, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Flatten a list of per-centre neighbour lists into (ci, cj)."""
+    counts = np.fromiter((len(x) for x in neighbours), dtype=np.int64, count=n)
+    ci = np.repeat(np.arange(n, dtype=np.int64), counts)
+    if counts.sum():
+        cj = np.concatenate([np.asarray(x, dtype=np.int64) for x in neighbours])
+    else:
+        cj = np.empty(0, dtype=np.int64)
+    return ci, cj
 
 
 def _pairs_orthorhombic(
@@ -164,14 +173,7 @@ def _pairs_orthorhombic(
         wrapped, r_cut, workers=-1, return_sorted=False
     )
 
-    counts = np.fromiter((len(x) for x in neighbours), dtype=np.int64, count=n)
-    ci = np.repeat(np.arange(n, dtype=np.int64), counts)
-    if counts.sum():
-        cj = np.concatenate(
-            [np.asarray(x, dtype=np.int64) for x in neighbours]
-        )
-    else:
-        cj = np.empty(0, dtype=np.int64)
+    ci, cj = _expand_neighbour_lists(neighbours, n)
 
     keep = ci < cj
     ci, cj = ci[keep], cj[keep]
@@ -191,11 +193,8 @@ def _pairs_triclinic(
     ``r_cut`` is smaller than the smallest perpendicular box width.
     """
     n = len(positions)
-    if r_cut >= float(_box_widths(box).min()):
-        raise ValueError(
-            "the 27-image triclinic search requires r_cut < the smallest "
-            "perpendicular box width"
-        )
+    # The caller (compute_environment_similarity) guarantees
+    # r_cut < the smallest perpendicular box width.
     inv_box = np.linalg.inv(box)
     frac = positions @ inv_box
     frac -= np.floor(frac)  # fractional coordinates in [0, 1)
@@ -213,14 +212,7 @@ def _pairs_triclinic(
         centres, r_cut, workers=-1, return_sorted=False
     )
 
-    counts = np.fromiter((len(x) for x in neighbours), dtype=np.int64, count=n)
-    ci = np.repeat(np.arange(n, dtype=np.int64), counts)
-    if counts.sum():
-        ck = np.concatenate(
-            [np.asarray(x, dtype=np.int64) for x in neighbours]
-        )
-    else:
-        ck = np.empty(0, dtype=np.int64)
+    ci, ck = _expand_neighbour_lists(neighbours, n)
 
     cj = image_ids[ck]
     d = flat_images[ck] - centres[ci]
@@ -300,14 +292,11 @@ def _pairs_bruteforce(
         ci_parts.append(ii.astype(np.int64))
         cj_parts.append(jj.astype(np.int64))
         d_parts.append(best_d[ii - start, jj])
-    if ci_parts:
-        return (
-            np.concatenate(ci_parts),
-            np.concatenate(cj_parts),
-            np.concatenate(d_parts),
-        )
-    empty = np.empty(0, dtype=np.int64)
-    return empty, empty, np.empty((0, 3), dtype=np.float64)
+    return (
+        np.concatenate(ci_parts),
+        np.concatenate(cj_parts),
+        np.concatenate(d_parts),
+    )
 
 
 def compute_environment_similarity(
@@ -348,8 +337,10 @@ def compute_environment_similarity(
     neighbor_method : {'auto', 'orthorhombic', 'triclinic', 'bruteforce'}
         Neighbour-search implementation.  ``auto`` picks the fastest safe one.
     validate : bool
-        Validate positions/parameters/references.  The reporter validates its
-        static parameters once and passes ``False`` on the per-frame path.
+        Validate positions/parameters/references.  Shape and box-volume checks
+        always run; ``False`` skips the O(N) position/reference finite checks
+        and the static parameter checks.  The reporter validates those once and
+        passes ``False`` on the per-frame path.
 
     Returns
     -------
@@ -481,11 +472,23 @@ def compute_environment_similarity(
     return vmax + np.log(np.exp(lam * (values - vmax)).sum(axis=0)) / lam
 
 
-def _more_than_count_unchecked(
+def _normalize_nn_mm(nn: int, mm: int) -> tuple[int, int]:
+    """Apply PLUMED's MM=0 -> 2*NN rule and validate the exponents."""
+    if mm == 0:
+        mm = 2 * nn
+    if nn <= 0 or mm <= 0 or nn >= mm:
+        raise ValueError("nn must be positive and smaller than mm (mm=0 means 2*nn)")
+    return int(nn), int(mm)
+
+
+def _more_than_count_fast(
     values: np.ndarray, r0: float, nn: int, mm: int
 ) -> float:
-    """Soft count for already-normalized, already-validated parameters."""
-    r = np.atleast_1d(np.asarray(values, dtype=np.float64) / r0)
+    """Soft count for validated parameters; values are finite-checked here."""
+    values = np.asarray(values, dtype=np.float64)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("values contain non-finite entries")
+    r = np.atleast_1d(values / r0)
     s = np.empty_like(r)
     near_one = np.abs(r - 1.0) < 1.0e-12
     s[near_one] = nn / mm
@@ -514,17 +517,8 @@ def more_than_count(
     """
     if r0 is None or not np.isfinite(r0) or r0 <= 0.0:
         raise ValueError("r0 must be a positive finite number")
-    if mm == 0:
-        mm = 2 * nn
-    if nn <= 0 or mm <= 0:
-        raise ValueError("nn and mm must be positive (mm=0 means 2*nn)")
-    if nn >= mm:
-        raise ValueError("nn must be smaller than mm")
-
-    values = np.asarray(values, dtype=np.float64)
-    if not np.all(np.isfinite(values)):
-        raise ValueError("values contain non-finite entries")
-    return _more_than_count_unchecked(values, r0, nn, mm)
+    nn, mm = _normalize_nn_mm(nn, mm)
+    return _more_than_count_fast(np.asarray(values, dtype=np.float64), r0, nn, mm)
 
 
 class EnvsimReporter:
@@ -607,10 +601,7 @@ class EnvsimReporter:
             raise ValueError("lam must be a positive finite number")
         if r0 is not None and (not np.isfinite(r0) or r0 <= 0.0):
             raise ValueError("r0 must be a positive finite number or None")
-        if mm == 0:
-            mm = 2 * nn
-        if nn <= 0 or mm <= 0 or nn >= mm:
-            raise ValueError("nn must be positive and smaller than mm")
+        nn, mm = _normalize_nn_mm(nn, mm)
         if not isinstance(time_unit, Unit) or not time_unit.is_compatible(second):
             raise TypeError(
                 "time_unit must be an openmm.unit time unit, e.g. nanosecond "
@@ -645,7 +636,6 @@ class EnvsimReporter:
         if isinstance(water_names, str):
             water_names = (water_names,)
         self.water_names = tuple(water_names)
-        self._oxygen_names = _DEFAULT_OXYGEN_NAMES
 
         self._ids: np.ndarray | None = None
         self.env: np.ndarray | None = None
@@ -752,7 +742,7 @@ class EnvsimReporter:
         n_ice = (
             None
             if self.r0 is None
-            else _more_than_count_unchecked(env, self.r0, self.nn, self.mm)
+            else _more_than_count_fast(env, self.r0, self.nn, self.mm)
         )
         self.n_ice = n_ice
 
@@ -798,10 +788,7 @@ class EnvsimReporter:
                 setattr(self, attr, None)
 
     def __del__(self) -> None:
-        try:
-            self.close()
-        except Exception:
-            pass
+        self.close()
 
     # ------------------------------------------------------------------
     # Internals
@@ -822,7 +809,7 @@ class EnvsimReporter:
             if element is not None:
                 if element.symbol != "O":
                     continue
-            elif atom.name not in self._oxygen_names:
+            elif atom.name not in _DEFAULT_OXYGEN_NAMES:
                 continue
             ids.append(atom.index)
         if not ids:
