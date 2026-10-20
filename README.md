@@ -157,7 +157,7 @@ To extend existing files after a restart, pass `append=True`.
 | `interval` | required | report interval in MD steps |
 | `references` | required | list of reference PDB files (displacement vectors, Å) |
 | `sigma` | `0.05` | PLUMED `SIGMA`, in **nm** (0.05 nm = 0.5 Å) |
-| `cutoff` | `3.0` | PLUMED `CUTOFF`: `r_cut = max|r0| + cutoff*sigma` |
+| `cutoff` | `3.0` | PLUMED `CUTOFF`: `r_cut = max reference distance + cutoff*sigma` |
 | `lam` | `100.0` | PLUMED `LAMBDA` soft-max parameter |
 | `r0` | `None` | PLUMED `MORE_THAN` `R_0`; `None` runs in calibration mode |
 | `nn`, `mm` | `8`, `16` | PLUMED `MORE_THAN={RATIONAL ...}` (`mm=0` means `2*nn`) |
@@ -226,12 +226,15 @@ corresponds to:
 
 ```python
 EnvsimReporter(
-    file='env.dat', interval=100,
+    file='colvar', interval=100,
     references=['ref1.pdb', 'ref2.pdb', 'ref3.pdb', 'ref4.pdb'],
     sigma=0.05, cutoff=3.0, lam=100.0,
     r0=0.65, nn=8, mm=16,
 )
 ```
+
+`file` is the output name; the reporter writes its own tab-separated summary
+(`#Step`, `Time(ns)`, `Temperature(K)`, `env_mean`, `n_ice`).
 
 ## Reference PDB files
 
@@ -321,8 +324,8 @@ The reporter reads positions from the `State` and computes on the CPU.
 `tests/validate_against_plumed.py` replays existing DCD trajectories and
 compares the reporter with PLUMED's `colvar` files:
 
-| system | box | references | `max|Δ env|` | `max|Δ env_mean|` | `max|Δ n_ice|` |
-|---|---|---|---|---|
+| system | box | references | max Δenv | max Δenv_mean | max Δn_ice |
+|---|---|---|---|---|---|
 | Ih ice, 10 frames | orthorhombic | 4 × 4 atoms | — | 5.1e-7 | 3.8e-5 |
 | Ih water, 10 frames | orthorhombic | 4 × 4 atoms | 1.6e-6 | — | — |
 | II ice, 10 frames | **triclinic** | 12 × 5 atoms | — | 4.4e-7 | 1.3e-5 |
