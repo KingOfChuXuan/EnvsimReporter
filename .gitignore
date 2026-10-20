@@ -3,6 +3,7 @@ tests/
 # ---------- 其他 ----------
 ENVIRONMENTSIMILARITY_原理与实现计划.md
 244119_1_online.pdf
+CODE_WALKTHROUGH.md
 # ---------- Python ----------
 __pycache__/
 *.py[cod]

@@ -106,8 +106,9 @@ reporter.env        # numpy array of per-oxygen values (last frame)
 ```
 
 For per-atom values during production, pass
-`per_atom_file='env_per_atom.dat'`.  The default (`r0` given,
-`per_atom_file=None`) produces the summary file.
+`per_atom_file='env_per_atom.dat'`.  With `r0` given, the default
+(`per_atom_file=False`) produces the summary file.  In calibration mode
+(`r0=None`) the reporter always writes `env.N`, regardless of this flag.
 
 To extend existing files after a restart, pass `append=True`.
 
@@ -127,7 +128,7 @@ To extend existing files after a restart, pass `append=True`.
 | `nn`, `mm` | `8`, `16` | PLUMED `MORE_THAN={RATIONAL ...}` (mm=0 means 2*nn) |
 | `group` | `None` | 0-based atom indices; default = O atoms of water residues |
 | `water_names` | `('HOH','WAT','SOL','TIP3','TIP3P','SPC','SPCE')` | residue names for automatic O selection |
-| `per_atom_file` | `None` | `None`: automatic (per-atom in calibration mode); `False`: summary file; path: write there |
+| `per_atom_file` | `False` | `False`: summary file when `r0` is given, forced `env.N` when `r0=None`; path: write there |
 | `append` | `False` | extend existing files |
 | `time_unit` | `nanosecond` | `openmm.unit.Unit` for the time column, e.g. `nanosecond` or `picosecond` |
 | `normalization` | `'per_reference'` | `'per_reference'` (correct) or `'plumed'` (PLUMED's first-reference convention) |
@@ -307,6 +308,9 @@ At 100 ns/day (≈1.16 ps/s):
 
 Use `interval=1000` in production and `interval=100` for calibration.  For
 8000-oxygen systems, use `interval>=1000` (or `5000`) to keep the overhead small.
+Triclinic cells use a metric-scaled periodic KD-tree (a superset query plus an
+exact distance filter), which avoids copying 27 images: on the ice-II cell it is
+~35% faster than the 27-image fallback (11.3 vs 17.3 ms for 1280 O, 10 refs).
 
 The State request contains positions; the reporter computes the values on the CPU
 and leaves forces, energies and velocities in the simulation.

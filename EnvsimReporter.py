@@ -364,7 +364,7 @@ def compute_environment_similarity(
     if method == "orthorhombic":
         ci, cj, d = _pairs_orthorhombic(pos, box, r_cut)
     elif method == "triclinic":
-        ci, cj, d = _pairs_triclinic(pos, box, r_cut)
+        ci, cj, d = _pairs_triclinic_scaled(pos, box, r_cut)
     elif method == "bruteforce":
         ci, cj, d = _pairs_bruteforce(pos, box, r_cut)
     else:
@@ -471,9 +471,10 @@ class EnvsimReporter:
         all oxygen atoms of water residues are selected automatically.
     water_names : sequence of str
         Residue names used by the automatic oxygen selection.
-    per_atom_file : str, path-like, None or False
-        Per-atom output file.  ``None``: automatic (``<file>_env.dat`` in
-        calibration mode); ``False``: write the summary file; path: write there.
+    per_atom_file : str, path-like or False
+        Per-atom output file.  ``False`` (default): the summary file only when
+        ``r0`` is given; in calibration mode (``r0=None``) the reporter always
+        writes a per-atom file.  Pass a path to choose its location.
     append : bool
         Extend existing files; headers are written for new files.
     time_unit : openmm.unit.Unit
@@ -496,7 +497,7 @@ class EnvsimReporter:
         mm: int = 16,
         group: Sequence[int] | None = None,
         water_names: Sequence[str] | str = _DEFAULT_WATER_NAMES,
-        per_atom_file: str | os.PathLike | None | bool = None,
+        per_atom_file: str | os.PathLike | bool = False,
         append: bool = False,
         time_unit: Unit = nanosecond,
         normalization: str = "per_reference",
@@ -574,18 +575,20 @@ class EnvsimReporter:
                 self._out.write("\t".join(columns) + "\n")
                 self._out.flush()
 
-        # Per-atom output file
-        if per_atom_file is False:
-            atom_path = None
-        elif per_atom_file is None:
-            if self.r0 is None:
-                if file is not None:
-                    root, ext = os.path.splitext(os.fspath(file))
-                    atom_path = root + "_env" + (ext or ".dat")
-                else:
-                    atom_path = "env_per_atom.dat"
+        # Per-atom output file.  Calibration mode (r0 is None) always writes
+        # env.N; otherwise it is written only when a path is supplied.
+        if per_atom_file is None:
+            per_atom_file = False
+        if per_atom_file is True:
+            raise TypeError("per_atom_file must be a path or False")
+        if self.r0 is None and per_atom_file is False:
+            if file is not None:
+                root, ext = os.path.splitext(os.fspath(file))
+                atom_path = root + "_env" + (ext or ".dat")
             else:
-                atom_path = None
+                atom_path = "env_per_atom.dat"
+        elif per_atom_file is False:
+            atom_path = None
         else:
             atom_path = os.fspath(per_atom_file)
         self._atom_path = atom_path
@@ -717,3 +720,64 @@ class EnvsimReporter:
                 except Exception:
                     break
         return None
+
+
+def _pairs_triclinic_scaled(
+    positions: np.ndarray, box: np.ndarray, r_cut: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Triclinic neighbour pairs via a metric-scaled periodic KD-tree.
+
+    Fractional coordinates are scaled by the box-vector lengths, so the
+    periodic cell becomes an axis-aligned box that ``cKDTree`` can handle.
+    For a displacement ``df`` in fractional coordinates the real squared
+    distance is ``df @ (box @ box.T) @ df.T``.  With ``y = df * lengths``
+    this becomes ``y @ G' @ y.T`` where ``G' = G / (lengths outer lengths)``.
+    If ``lambda_min`` is the smallest eigenvalue of ``G'``, then
+    ``|d|^2 >= lambda_min * |y|^2``.  Querying the scaled KD-tree with
+    ``r_cut / sqrt(lambda_min)`` therefore returns a superset of the true
+    neighbours; the exact minimum-image distances are filtered afterwards.
+
+    This avoids materialising 27 copies of every atom.  For very skewed cells
+    the enlarged radius can approach the box size; in that case the function
+    falls back to the 27-image or brute-force implementation.
+    """
+    n = len(positions)
+    inv_box = np.linalg.inv(box)
+    frac = positions @ inv_box
+    frac -= np.floor(frac)
+
+    lengths = np.linalg.norm(box, axis=1)
+    metric = box @ box.T
+    scaled_metric = metric / np.outer(lengths, lengths)
+    lambda_min = float(np.linalg.eigvalsh(scaled_metric)[0])
+    if lambda_min <= 0.0:
+        return _pairs_triclinic(positions, box, r_cut)
+
+    r_query = r_cut / np.sqrt(lambda_min)
+    if r_query > 0.5 * float(lengths.min()):
+        if r_cut < float(_box_widths(box).min()):
+            return _pairs_triclinic(positions, box, r_cut)
+        return _pairs_bruteforce(positions, box, r_cut)
+
+    scaled = frac * lengths
+    tree = cKDTree(scaled, boxsize=lengths)
+    neighbours = tree.query_ball_point(
+        scaled, r_query, workers=-1, return_sorted=False
+    )
+
+    counts = np.fromiter((len(x) for x in neighbours), dtype=np.int64, count=n)
+    ci = np.repeat(np.arange(n, dtype=np.int64), counts)
+    if counts.sum():
+        cj = np.concatenate([np.asarray(x, dtype=np.int64) for x in neighbours])
+    else:
+        cj = np.empty(0, dtype=np.int64)
+
+    keep = ci < cj
+    ci, cj = ci[keep], cj[keep]
+
+    dfrac = frac[cj] - frac[ci]
+    dfrac -= np.round(dfrac)
+    d = dfrac @ box
+    r2 = np.einsum("ij,ij->i", d, d)
+    keep = r2 < r_cut * r_cut
+    return ci[keep], cj[keep], d[keep]
