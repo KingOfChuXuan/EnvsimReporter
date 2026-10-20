@@ -1,29 +1,23 @@
-# ---------- 目录 ----------
-tests/
-# ---------- 其他 ----------
-ENVIRONMENTSIMILARITY_原理与实现计划.md
-244119_1_online.pdf
-CODE_WALKTHROUGH.md
-# ---------- Python ----------
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.so
+.Python
 
-# ---------- 虚拟环境 ----------
+# Environments
 .venv/
 venv/
 env/
 ENV/
 .python-version
 
-# ---------- 打包 / 分发 ----------
+# Packaging
 build/
 dist/
 *.egg-info/
 .eggs/
 
-# ---------- 测试 / 覆盖率 ----------
+# Tests / coverage
 .pytest_cache/
 .coverage
 .coverage.*
@@ -32,20 +26,26 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# ---------- 编辑器 / IDE ----------
+# Editors / OS
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-
-# ---------- 操作系统 ----------
 .DS_Store
 Thumbs.db
-desktop.ini
 
-# ---------- 本项目：临时 / 草稿文件 ----------
-*.tmp
+# Local drafts and literature (not part of the repository)
+ENVIRONMENTSIMILARITY_原理与实现计划.md
+CODE_WALKTHROUGH.md
+*.pdf
+
+# Simulation outputs
+*.dcd
 *.log
-scratch_*.py
-test_scratch_*.py
+colvar*
+env*.dat
+
+# Local test data / scratch experiments
+tests/mytest/
+tests/3_1_test_n_ice_ice.py

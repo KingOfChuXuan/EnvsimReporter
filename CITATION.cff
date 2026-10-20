@@ -1,0 +1,74 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the ENVIRONMENTSIMILARITY paper and this repository."
+title: "EnvsimReporter: an OpenMM reporter for PLUMED's ENVIRONMENTSIMILARITY"
+type: software
+authors:
+  - family-names: Jiang
+    given-names: Xuan
+version: 0.1.0
+date-released: 2026-10-20
+license: MIT
+references:
+  - type: article
+    title: "Calculation of phase diagrams in the multithermal-multibaric ensemble"
+    authors:
+      - family-names: Piaggi
+        given-names: Pablo M.
+      - family-names: Parrinello
+        given-names: Michele
+    journal: "The Journal of Chemical Physics"
+    volume: 150
+    start: 244119
+    year: 2019
+    doi: "10.1063/1.5102104"
+  - type: article
+    title: "PLUMED 2: New feathers for an old bird"
+    authors:
+      - family-names: Tribello
+        given-names: Gareth A.
+      - family-names: Bonomi
+        given-names: Massimiliano
+      - family-names: Branduardi
+        given-names: Davide
+      - family-names: Camilloni
+        given-names: Carlo
+      - family-names: Bussi
+        given-names: Giovanni
+    journal: "Computer Physics Communications"
+    volume: 185
+    start: 604
+    end: 613
+    year: 2014
+    doi: "10.1016/j.cpc.2013.09.018"
+  - type: article
+    title: "OpenMM 7: Rapid development of high performance algorithms for molecular dynamics"
+    authors:
+      - family-names: Eastman
+        given-names: Peter
+      - family-names: Swails
+        given-names: Jason
+      - family-names: Chodera
+        given-names: John D.
+      - family-names: McGibbon
+        given-names: Robert T.
+      - family-names: Zhao
+        given-names: Yutong
+      - family-names: Beauchamp
+        given-names: Kyle A.
+      - family-names: Wang
+        given-names: Lingle
+      - family-names: Simmonett
+        given-names: Andrew C.
+      - family-names: Harrigan
+        given-names: Matthew P.
+      - family-names: Stern
+        given-names: Chaya D.
+      - family-names: Fogarty
+        given-names: Ryan P.
+      - family-names: Pande
+        given-names: Vijay S.
+    journal: "PLOS Computational Biology"
+    volume: 13
+    start: e1005659
+    year: 2017
+    doi: "10.1371/journal.pcbi.1005659"
