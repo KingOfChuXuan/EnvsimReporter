@@ -339,12 +339,13 @@ Run the self-contained tests:
 python tests/test_pbc.py
 ```
 
-The DCD replay test is optional and needs your own trajectory data; see
-`tests/validate_against_plumed.py` for the expected layout.  It skips
-automatically when the data or MDAnalysis is unavailable:
+The DCD replay test is optional and needs your own trajectory data.  Pass the
+directory that contains the `Ih/` and `II/` datasets; the exact filenames are
+listed in the `datasets` table inside the script.  It skips automatically when
+the data or MDAnalysis is unavailable:
 
 ```bash
-python tests/validate_against_plumed.py
+python tests/validate_against_plumed.py --data-root /path/to/phase_diagram
 ```
 
 ## Notes

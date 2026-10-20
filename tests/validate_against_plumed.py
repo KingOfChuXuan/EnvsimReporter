@@ -7,18 +7,21 @@ reporter's kernel with PLUMED's colvar output.
 
 Run from the repository root:
 
-    python tests/validate_against_plumed.py
+    python tests/validate_against_plumed.py --data-root /path/to/phase_diagram
+
+The data root is the directory that contains the `Ih/` and `II/` folders used
+by the datasets below.  Without `--data-root`, the test skips.
 """
 
 from __future__ import annotations
 
+import argparse
 import pathlib
 import sys
 
 import numpy as np
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-WORKSPACE = REPO_ROOT.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from EnvsimReporter import (  # noqa: E402
@@ -26,8 +29,6 @@ from EnvsimReporter import (  # noqa: E402
     more_than_count,
     read_reference_pdb,
 )
-
-PHASE_DIR = WORKSPACE / "phase_diagram"
 
 
 def _frame_row(times: np.ndarray, t_ps: float) -> int:
@@ -93,37 +94,49 @@ def _check_dataset(
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--data-root",
+        type=pathlib.Path,
+        help="directory containing the Ih/ and II/ test datasets",
+    )
+    args = parser.parse_args()
+    if args.data_root is None:
+        print("no --data-root supplied; skipping the DCD replay test")
+        return 0
+
     try:
         import MDAnalysis  # noqa: F401
     except ImportError:
         print("MDAnalysis not installed; skipping the DCD replay test")
         return 0
 
+    phase_dir = args.data_root
     datasets = [
         (
             "Ih ice",
-            PHASE_DIR / "Ih/prepair/ice_Ih_432.pdb",
-            PHASE_DIR / "Ih/prepair/N_ice_test/trj_ice.dcd",
-            PHASE_DIR / "Ih/prepair/N_ice_test/colvar_ice.out",
-            [PHASE_DIR / f"Ih/prepair/ref{i}.pdb" for i in range(1, 5)],
+            phase_dir / "Ih/prepair/ice_Ih_432.pdb",
+            phase_dir / "Ih/prepair/N_ice_test/trj_ice.dcd",
+            phase_dir / "Ih/prepair/N_ice_test/colvar_ice.out",
+            [phase_dir / f"Ih/prepair/ref{i}.pdb" for i in range(1, 5)],
             0.65,
             True,
         ),
         (
             "Ih water",
-            PHASE_DIR / "Ih/prepair/wat432.pdb",
-            PHASE_DIR / "Ih/prepair/CV_test/trj_wat.dcd",
-            PHASE_DIR / "Ih/prepair/CV_test/colvar_wat.out",
-            [PHASE_DIR / f"Ih/prepair/ref{i}.pdb" for i in range(1, 5)],
+            phase_dir / "Ih/prepair/wat432.pdb",
+            phase_dir / "Ih/prepair/CV_test/trj_wat.dcd",
+            phase_dir / "Ih/prepair/CV_test/colvar_wat.out",
+            [phase_dir / f"Ih/prepair/ref{i}.pdb" for i in range(1, 5)],
             None,
             False,
         ),
         (
             "II ice",
-            PHASE_DIR / "II/prepair/ice_II_432.pdb",
-            PHASE_DIR / "II/prepair/N_ice_test/trj_ice.dcd",
-            PHASE_DIR / "II/prepair/N_ice_test/colvar_ice.out",
-            [PHASE_DIR / f"II/prepair/ref{i}.pdb" for i in range(1, 13)],
+            phase_dir / "II/prepair/ice_II_432.pdb",
+            phase_dir / "II/prepair/N_ice_test/trj_ice.dcd",
+            phase_dir / "II/prepair/N_ice_test/colvar_ice.out",
+            [phase_dir / f"II/prepair/ref{i}.pdb" for i in range(1, 13)],
             0.69,
             True,
         ),
