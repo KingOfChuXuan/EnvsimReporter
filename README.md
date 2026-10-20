@@ -129,7 +129,7 @@ To extend existing files after a restart, pass `append=True`.
 | `water_names` | `('HOH','WAT','SOL','TIP3','TIP3P','SPC','SPCE')` | residue names for automatic O selection |
 | `per_atom_file` | `None` | `None`: automatic (per-atom in calibration mode); `False`: summary file; path: write there |
 | `append` | `False` | extend existing files |
-| `time_unit` | `'ns'` | output time unit (`'ns'` or `'ps'`) |
+| `time_unit` | `nanosecond` | `openmm.unit.Unit` for the time column, e.g. `nanosecond` or `picosecond` |
 | `normalization` | `'per_reference'` | `'per_reference'` (correct) or `'plumed'` (PLUMED's first-reference convention) |
 
 ### `interval`
@@ -240,12 +240,14 @@ diagrams all `ref*.pdb` of a given phase have the same number of atoms (Ih: 4,
 II: 5, ...), so the two choices are identical.
 
 This reporter defaults to `normalization='per_reference'` (the mathematically
-correct generalization) and warns if the reference sizes differ.  To mirror
-PLUMED's code exactly — for example when comparing against an existing `colvar`
-file — pass `normalization='plumed'`.  For equal-size references, which is the
-case for the current water phases, the default already produces identical
-numbers; the choice matters only when template sizes differ.  The validation
-below uses `'plumed'` to compare directly with the PLUMED output.
+correct generalization).  To mirror PLUMED's code exactly — for example when
+comparing against an existing `colvar` file — pass `normalization='plumed'`.
+For equal-size references, which is the case for the current water phases, the
+default already produces identical numbers; the choice matters only when
+template sizes differ.  In that mixed-size case, `'per_reference'` stays silent
+and `'plumed'` emits a warning, since the latter applies the first template's
+size to every template.  The validation below uses `'plumed'` to compare
+directly with the PLUMED output.
 
 ---
 
@@ -259,7 +261,7 @@ Tab-separated, one row per report:
 #Step	Time(ns)	Temperature(K)	env_mean	n_ice
 ```
 
-- `Time(ns)`: default `ns`; use `time_unit='ps'` to match PLUMED colvar exactly.
+- `Time(ns)`: default `nanosecond`; pass `time_unit=picosecond` to match PLUMED colvar exactly.
 - `Temperature(K)`: from `integrator.getTemperature()`; if unavailable, `\`.
 - `n_ice`: written when `r0` is given.
 - Volume: add `StateDataReporter(volume=True)` to the simulation.
@@ -350,8 +352,9 @@ python tests/validate_against_plumed.py
    ≈0.43 nm, for II ≈0.47 nm.
 4. **`SPECIES` supplies both centres and neighbours.**  Only O atoms enter the
    kernel.
-5. **Time unit.**  Output is in `ns` by default; PLUMED's `colvar` is in `ps`.
-   Use `time_unit='ps'` to compare files directly.
+5. **Time unit.**  Output uses `nanosecond` by default; PLUMED's `colvar` is in
+   `ps`.  Pass `time_unit=picosecond` (`from openmm.unit import picosecond`) to
+   compare files directly.
 6. **Group indices are 0-based** (OpenMM convention).  PLUMED's `SPECIES=1-1296:3`
    is 1-based.
 7. **Periodic systems.**  The reporter requires valid periodic box vectors.

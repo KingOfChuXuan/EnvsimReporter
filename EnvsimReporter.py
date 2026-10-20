@@ -30,7 +30,7 @@ Typical use::
         interval=1000,
         references=['ref1.pdb', 'ref2.pdb', 'ref3.pdb', 'ref4.pdb'],
         sigma=0.05,      # nm, same as PLUMED SIGMA
-        r0=0.65,         # None -> write per-atom env.N file instead
+        r0=0.65,         # None: calibration mode, writes per-atom env.N
         nn=8, mm=16,
     )
     simulation.reporters.append(reporter)
@@ -49,7 +49,7 @@ from typing import Sequence
 import numpy as np
 from scipy.spatial import cKDTree
 
-from openmm.unit import kelvin, nanometer, picosecond
+from openmm.unit import Unit, kelvin, nanometer, nanosecond
 
 __all__ = [
     "EnvsimReporter",
@@ -326,17 +326,23 @@ def compute_environment_similarity(
             raise ValueError("each reference must have shape (n, 3) with n > 0")
 
     sizes = np.array([len(ref) for ref in refs], dtype=np.float64)
-    if normalization == "per_reference":
-        norm_div = sizes
-        if np.any(sizes != sizes[0]):
-            warnings.warn(
-                "reference environments have different atom counts; using "
-                "per-reference normalization.  PLUMED divides all of them by "
-                "the first reference size (normalization='plumed').",
-                stacklevel=2,
-            )
-    else:
+    sizes_equal = bool(np.all(sizes == sizes[0]))
+    if sizes_equal:
+        # Common case: one normalization factor for every template.  This is
+        # identical to PLUMED's first-reference convention.
         norm_div = np.full(len(refs), sizes[0], dtype=np.float64)
+    elif normalization == "plumed":
+        warnings.warn(
+            "normalization='plumed' divides every template by the first "
+            "reference size, while the reference sizes differ.  The templates "
+            "are then not individually self-normalized; use "
+            "normalization='per_reference' for the self-normalized kernel.",
+            stacklevel=2,
+        )
+        norm_div = np.full(len(refs), sizes[0], dtype=np.float64)
+    else:
+        norm_div = sizes
+    inv_norm = 1.0 / norm_div
 
     max_ref_norm = max(float(np.linalg.norm(ref, axis=1).max()) for ref in refs)
     r_cut = max_ref_norm + cutoff * sigma
@@ -381,8 +387,8 @@ def compute_environment_similarity(
         d2_backward = r2[:, None] + ref_norm2[None, :] + 2.0 * dot
         np.maximum(d2_forward, 0.0, out=d2_forward)
         np.maximum(d2_backward, 0.0, out=d2_backward)
-        kernel_forward = np.exp(-d2_forward * inv4s2).sum(axis=1) / norm_div[m]
-        kernel_backward = np.exp(-d2_backward * inv4s2).sum(axis=1) / norm_div[m]
+        kernel_forward = np.exp(-d2_forward * inv4s2).sum(axis=1) * inv_norm[m]
+        kernel_backward = np.exp(-d2_backward * inv4s2).sum(axis=1) * inv_norm[m]
         values[m] = np.bincount(ci, weights=kernel_forward, minlength=n)
         values[m] += np.bincount(cj, weights=kernel_backward, minlength=n)
 
@@ -455,9 +461,9 @@ class EnvsimReporter:
     lam : float
         PLUMED ``LAMBDA`` soft-max parameter (default 100).
     r0 : float or None
-        PLUMED ``MORE_THAN`` threshold ``R_0``.  If ``None`` (default), no
-        ``n_ice`` is computed and a per-atom ``env.N`` file is written by
-        default, so the user can inspect the distribution and choose ``r0``.
+        PLUMED ``MORE_THAN`` threshold ``R_0``.  ``None`` (default) runs in
+        calibration mode: the reporter writes a per-atom ``env.N`` file so the
+        user can inspect the distribution and choose ``r0``.
     nn, mm : int
         PLUMED ``MORE_THAN={RATIONAL ... NN=nn MM=mm}``.  ``mm=0`` means 2*nn.
     group : sequence of int or None
@@ -470,8 +476,8 @@ class EnvsimReporter:
         calibration mode); ``False``: write the summary file; path: write there.
     append : bool
         Extend existing files; headers are written for new files.
-    time_unit : {'ns', 'ps'}
-        Time unit of the output files.  Default ``'ns'``.
+    time_unit : openmm.unit.Unit
+        Time unit of the output files.  Default ``nanosecond``.
     normalization : {'per_reference', 'plumed'}
         Normalization of multiple reference environments; see
         :func:`compute_environment_similarity`.
@@ -492,7 +498,7 @@ class EnvsimReporter:
         water_names: Sequence[str] | str = _DEFAULT_WATER_NAMES,
         per_atom_file: str | os.PathLike | None | bool = None,
         append: bool = False,
-        time_unit: str = "ns",
+        time_unit: Unit = nanosecond,
         normalization: str = "per_reference",
     ) -> None:
         if int(interval) <= 0:
@@ -514,8 +520,10 @@ class EnvsimReporter:
             mm = 2 * nn
         if nn <= 0 or mm <= 0 or nn == mm:
             raise ValueError("nn and mm must be positive and different")
-        if time_unit not in ("ns", "ps"):
-            raise ValueError("time_unit must be 'ns' or 'ps'")
+        if not isinstance(time_unit, Unit):
+            raise TypeError(
+                "time_unit must be an openmm.unit.Unit, e.g. nanosecond or picosecond"
+            )
         if normalization not in ("per_reference", "plumed"):
             raise ValueError("normalization must be 'per_reference' or 'plumed'")
 
@@ -531,18 +539,6 @@ class EnvsimReporter:
         self.append = bool(append)
 
         self._refs = [read_reference_pdb(path) * _ANGSTROM_TO_NM for path in references]
-        self._ref_sizes = [len(ref) for ref in self._refs]
-        if len(set(self._ref_sizes)) > 1:
-            warnings.warn(
-                "reference environments have different atom counts; "
-                "PLUMED uses the first reference size for all of them.  "
-                "Use normalization='plumed' for strict PLUMED compatibility.",
-                stacklevel=2,
-            )
-        self._max_ref_norm = max(
-            float(np.linalg.norm(ref, axis=1).max()) for ref in self._refs
-        )
-        self._r_cut = self._max_ref_norm + self.cutoff * self.sigma
 
         if group is None:
             self._group = None
@@ -569,7 +565,7 @@ class EnvsimReporter:
             if not self.append:
                 columns = [
                     "#Step",
-                    f"Time({self.time_unit})",
+                    f"Time({self.time_unit.get_symbol()})",
                     "Temperature(K)",
                     "env_mean",
                 ]
@@ -642,8 +638,7 @@ class EnvsimReporter:
         n_ice = None if self.r0 is None else more_than_count(env, self.r0, self.nn, self.mm)
         self.n_ice = n_ice
 
-        time_ps = state.getTime().value_in_unit(picosecond)
-        time_out = time_ps * 0.001 if self.time_unit == "ns" else time_ps
+        time_out = state.getTime().value_in_unit(self.time_unit)
         temperature = self._get_temperature(simulation)
 
         if self._out is not None:
