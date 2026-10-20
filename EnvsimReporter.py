@@ -152,6 +152,13 @@ def _pairs_orthorhombic(
     lengths = np.diag(box).astype(np.float64, copy=True)
     if np.any(lengths <= 0.0):
         raise ValueError("orthorhombic box lengths must be positive")
+    if r_cut >= 0.5 * float(lengths.min()):
+        warnings.warn(
+            "neighbour cutoff is at least half the smallest box length; the "
+            "minimum image is not unique.  Use a larger box if multiple "
+            "periodic images are physically relevant.",
+            stacklevel=2,
+        )
 
     wrapped = positions % lengths
     tree = cKDTree(wrapped, boxsize=lengths)
@@ -732,7 +739,15 @@ class EnvsimReporter:
         n_ice = None if self.r0 is None else more_than_count(env, self.r0, self.nn, self.mm)
         self.n_ice = n_ice
 
-        time_out = state.getTime().value_in_unit(self.time_unit)
+        try:
+            time_out = state.getTime().value_in_unit(self.time_unit)
+        except Exception:
+            try:
+                time_out = (
+                    simulation.currentStep * simulation.integrator.getStepSize()
+                ).value_in_unit(self.time_unit)
+            except Exception:
+                time_out = float("nan")
 
         if self._out is not None:
             temperature = self._get_temperature(simulation)

@@ -263,6 +263,8 @@ Tab-separated, one row per report:
 ```
 
 - `Time(ns)`: default `nanosecond`; pass `time_unit=picosecond` to match PLUMED colvar exactly.
+  If the State has no time, the reporter falls back to `step * dt`; if that also
+  fails, it writes `nan`.
 - `Temperature(K)`: from `integrator.getTemperature()`; if unavailable, `nan`.
 - `n_ice`: written when `r0` is given.
 - The first row is written at the first report interval (step = `interval`); PLUMED's
@@ -357,7 +359,9 @@ python tests/validate_against_plumed.py
    `(x, y, z)`; the four Ih references cover four orientations, so keep all of
    them.
 3. **Neighbour cutoff.**  `r_cut = max|r0| + 3σ`; for Ih σ=0.05 nm this is
-   ≈0.43 nm, for II ≈0.47 nm.
+   ≈0.43 nm, for II ≈0.47 nm.  In an orthorhombic box, keep `r_cut` below half
+   the smallest box length; the reporter warns if multiple periodic images can
+   enter the cutoff.
 4. **`SPECIES` supplies both centres and neighbours.**  Only O atoms enter the
    kernel.
 5. **Time unit.**  Output uses `nanosecond` by default; PLUMED's `colvar` is in
@@ -372,3 +376,6 @@ python tests/validate_against_plumed.py
    crosses your threshold.
 10. **Volume.**  Add `StateDataReporter(volume=True)`; both reporters share the
     same State request.
+11. **PLUMED semantics.**  `n_ice` is PLUMED's `MORE_THAN` soft count,
+    `Σ(1 - switch)`.  When comparing with paper Eq. (7), use the same sign
+    convention as PLUMED for thresholds.
