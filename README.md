@@ -265,6 +265,8 @@ Tab-separated, one row per report:
 - `Time(ns)`: default `nanosecond`; pass `time_unit=picosecond` to match PLUMED colvar exactly.
 - `Temperature(K)`: from `integrator.getTemperature()`; if unavailable, `\`.
 - `n_ice`: written when `r0` is given.
+- The first row is written at the first report interval (step = `interval`); PLUMED's
+  `colvar` can include a step-0 row.
 - Volume: add `StateDataReporter(volume=True)` to the simulation.
 
 ### Per-atom file
@@ -308,9 +310,9 @@ At 100 ns/day (≈1.16 ps/s):
 
 Use `interval=1000` in production and `interval=100` for calibration.  For
 8000-oxygen systems, use `interval>=1000` (or `5000`) to keep the overhead small.
-Triclinic cells use a metric-scaled periodic KD-tree (a superset query plus an
-exact distance filter), which avoids copying 27 images: on the ice-II cell it is
-~35% faster than the 27-image fallback (11.3 vs 17.3 ms for 1280 O, 10 refs).
+Triclinic cells use the 27-image minimum-image search.  When `r_cut` is not
+smaller than the smallest box width, the reporter falls back to an O(N²) search
+that explicitly enumerates periodic images.
 
 The State request contains positions; the reporter computes the values on the CPU
 and leaves forces, energies and velocities in the simulation.

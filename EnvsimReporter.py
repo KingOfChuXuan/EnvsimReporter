@@ -49,7 +49,7 @@ from typing import Sequence
 import numpy as np
 from scipy.spatial import cKDTree
 
-from openmm.unit import Unit, kelvin, nanometer, nanosecond
+from openmm.unit import Unit, kelvin, nanometer, nanosecond, second
 
 __all__ = [
     "EnvsimReporter",
@@ -115,8 +115,10 @@ def read_reference_pdb(path: str | os.PathLike) -> np.ndarray:
     return arr
 
 
-def _is_orthorhombic(box: np.ndarray, atol: float = 1.0e-6) -> bool:
-    return bool(np.allclose(box, np.diag(np.diag(box)), atol=atol))
+def _is_orthorhombic(box: np.ndarray, atol: float = 1.0e-8) -> bool:
+    return bool(
+        np.allclose(box, np.diag(np.diag(box)), rtol=0.0, atol=atol)
+    )
 
 
 def _box_widths(box: np.ndarray) -> np.ndarray:
@@ -228,27 +230,53 @@ def _pairs_triclinic(
 def _pairs_bruteforce(
     positions: np.ndarray, box: np.ndarray, r_cut: float, chunk: int = 256
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Reference O(N^2) implementation, used as a fallback and in tests."""
+    """Reference O(N^2) implementation, used as a fallback and in tests.
+
+    The minimum image is found by explicitly searching periodic shifts, not by
+    rounding fractional coordinates component-wise: the latter is exact only
+    for orthorhombic boxes.
+    """
     n = len(positions)
     inv_box = np.linalg.inv(box)
+    widths = _box_widths(box)
+    n_shift = max(1, int(np.ceil(r_cut / float(widths.min()))))
+    shifts = np.array(
+        list(itertools.product(range(-n_shift, n_shift + 1), repeat=3)),
+        dtype=np.float64,
+    )
+    if n_shift > 2:
+        warnings.warn(
+            "brute-force fallback searches a large number of periodic images; "
+            "the box is very small compared with the neighbour cutoff",
+            stacklevel=2,
+        )
+
     ci_parts: list[np.ndarray] = []
     cj_parts: list[np.ndarray] = []
     d_parts: list[np.ndarray] = []
     cutoff2 = r_cut * r_cut
     for start in range(0, n, chunk):
         stop = min(start + chunk, n)
-        d = positions[None, :, :] - positions[start:stop, None, :]
-        frac = d @ inv_box
-        frac -= np.round(frac)
-        d = frac @ box
-        r2 = np.einsum("...i,...i->...", d, d)
-        ii, jj = np.nonzero((r2 < cutoff2) & (r2 > 1.0e-12))
+        d0 = positions[None, :, :] - positions[start:stop, None, :]
+        frac = d0 @ inv_box
+        base = np.round(frac)
+        relative = frac - base
+        best_r2 = np.full(relative.shape[:2], np.inf, dtype=np.float64)
+        best_d = np.zeros_like(d0)
+        for shift in shifts:
+            candidate = (relative + shift) @ box
+            r2 = np.einsum("...i,...i->...", candidate, candidate)
+            improve = r2 < best_r2
+            best_r2[improve] = r2[improve]
+            best_d[improve] = candidate[improve]
+
+        ii, jj = np.nonzero(best_r2 < cutoff2)
         ii = ii + start
         keep = ii < jj
         ii, jj = ii[keep], jj[keep]
         ci_parts.append(ii.astype(np.int64))
         cj_parts.append(jj.astype(np.int64))
-        d_parts.append(d[ii - start, jj])
+        d_parts.append(best_d[ii - start, jj])
     if ci_parts:
         return (
             np.concatenate(ci_parts),
@@ -309,12 +337,16 @@ def compute_environment_similarity(
         raise ValueError("box_vectors must have shape (3, 3)")
     if len(pos) == 0:
         raise ValueError("positions is empty")
-    if sigma <= 0.0:
-        raise ValueError("sigma must be positive")
-    if cutoff < 0.0:
-        raise ValueError("cutoff must be non-negative")
-    if lam <= 0.0:
-        raise ValueError("lam must be positive")
+    if not np.all(np.isfinite(pos)):
+        raise ValueError("positions contain non-finite values")
+    if not np.all(np.isfinite(box)):
+        raise ValueError("box_vectors contain non-finite values")
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        raise ValueError("sigma must be a positive finite number")
+    if not np.isfinite(cutoff) or cutoff < 0.0:
+        raise ValueError("cutoff must be a non-negative finite number")
+    if not np.isfinite(lam) or lam <= 0.0:
+        raise ValueError("lam must be a positive finite number")
     if normalization not in ("per_reference", "plumed"):
         raise ValueError("normalization must be 'per_reference' or 'plumed'")
 
@@ -324,6 +356,8 @@ def compute_environment_similarity(
     for ref in refs:
         if ref.ndim != 2 or ref.shape[1] != 3 or len(ref) == 0:
             raise ValueError("each reference must have shape (n, 3) with n > 0")
+        if not np.all(np.isfinite(ref)):
+            raise ValueError("reference environments contain non-finite values")
 
     sizes = np.array([len(ref) for ref in refs], dtype=np.float64)
     sizes_equal = bool(np.all(sizes == sizes[0]))
@@ -362,9 +396,22 @@ def compute_environment_similarity(
             method = "bruteforce"
 
     if method == "orthorhombic":
+        if not _is_orthorhombic(box):
+            raise ValueError(
+                "neighbor_method='orthorhombic' requires an orthorhombic box"
+            )
         ci, cj, d = _pairs_orthorhombic(pos, box, r_cut)
     elif method == "triclinic":
-        ci, cj, d = _pairs_triclinic_scaled(pos, box, r_cut)
+        if r_cut >= float(_box_widths(box).min()):
+            warnings.warn(
+                "the 27-image triclinic search requires r_cut < the smallest "
+                "box width; falling back to the O(N^2) search",
+                stacklevel=2,
+            )
+            method = "bruteforce"
+            ci, cj, d = _pairs_bruteforce(pos, box, r_cut)
+        else:
+            ci, cj, d = _pairs_triclinic(pos, box, r_cut)
     elif method == "bruteforce":
         ci, cj, d = _pairs_bruteforce(pos, box, r_cut)
     else:
@@ -424,6 +471,8 @@ def more_than_count(
         raise ValueError("nn and mm must be different")
 
     values = np.asarray(values, dtype=np.float64)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("values contain non-finite entries")
     r_max = (1.0e-5) ** (1.0 / (nn - mm))
     r = values / r0
     s = np.zeros_like(r)
@@ -509,21 +558,22 @@ class EnvsimReporter:
         references = list(references)
         if not references:
             raise ValueError("at least one reference PDB is required")
-        if sigma <= 0.0:
-            raise ValueError("sigma must be positive")
-        if cutoff < 0.0:
-            raise ValueError("cutoff must be non-negative")
-        if lam <= 0.0:
-            raise ValueError("lam must be positive")
-        if r0 is not None and r0 <= 0.0:
-            raise ValueError("r0 must be positive or None")
+        if not np.isfinite(sigma) or sigma <= 0.0:
+            raise ValueError("sigma must be a positive finite number")
+        if not np.isfinite(cutoff) or cutoff < 0.0:
+            raise ValueError("cutoff must be a non-negative finite number")
+        if not np.isfinite(lam) or lam <= 0.0:
+            raise ValueError("lam must be a positive finite number")
+        if r0 is not None and (not np.isfinite(r0) or r0 <= 0.0):
+            raise ValueError("r0 must be a positive finite number or None")
         if mm == 0:
             mm = 2 * nn
         if nn <= 0 or mm <= 0 or nn == mm:
             raise ValueError("nn and mm must be positive and different")
-        if not isinstance(time_unit, Unit):
+        if not isinstance(time_unit, Unit) or not time_unit.is_compatible(second):
             raise TypeError(
-                "time_unit must be an openmm.unit.Unit, e.g. nanosecond or picosecond"
+                "time_unit must be an openmm.unit time unit, e.g. nanosecond "
+                "or picosecond"
             )
         if normalization not in ("per_reference", "plumed"):
             raise ValueError("normalization must be 'per_reference' or 'plumed'")
@@ -559,23 +609,7 @@ class EnvsimReporter:
         self.env_mean: float | None = None
         self.n_ice: float | None = None
 
-        # Main output file
-        self._out = None
-        if file is not None:
-            self._out = open(os.fspath(file), "a" if self.append else "w")
-            if not self.append:
-                columns = [
-                    "#Step",
-                    f"Time({self.time_unit.get_symbol()})",
-                    "Temperature(K)",
-                    "env_mean",
-                ]
-                if self.r0 is not None:
-                    columns.append("n_ice")
-                self._out.write("\t".join(columns) + "\n")
-                self._out.flush()
-
-        # Per-atom output file.  Calibration mode (r0 is None) always writes
+        # Per-atom output path.  Calibration mode (r0 is None) always writes
         # env.N; otherwise it is written only when a path is supplied.
         if per_atom_file is None:
             per_atom_file = False
@@ -591,12 +625,42 @@ class EnvsimReporter:
             atom_path = None
         else:
             atom_path = os.fspath(per_atom_file)
-        self._atom_path = atom_path
-        self._atom_out = None
-        if atom_path is not None:
-            if file is not None and os.path.abspath(atom_path) == os.path.abspath(os.fspath(file)):
+
+        if atom_path is not None and file is not None:
+            if os.path.abspath(atom_path) == os.path.abspath(os.fspath(file)):
                 raise ValueError("file and per_atom_file must be different paths")
-            self._atom_out = open(atom_path, "a" if self.append else "w")
+
+        self._atom_path = atom_path
+        self._out = None
+        self._atom_out = None
+        columns = [
+            "#Step",
+            f"Time({self.time_unit.get_symbol()})",
+            "Temperature(K)",
+            "env_mean",
+        ]
+        if self.r0 is not None:
+            columns.append("n_ice")
+
+        # Open the per-atom file first: if it fails, the summary file is not
+        # truncated yet.  If the summary open fails, close the per-atom handle.
+        try:
+            if atom_path is not None:
+                self._atom_out = open(atom_path, "a" if self.append else "w")
+            if file is not None:
+                file_path = os.fspath(file)
+                self._out = open(file_path, "a" if self.append else "w")
+                if not self.append or os.path.getsize(file_path) == 0:
+                    self._out.write("\t".join(columns) + "\n")
+                    self._out.flush()
+        except Exception:
+            if self._atom_out is not None:
+                self._atom_out.close()
+                self._atom_out = None
+            if self._out is not None:
+                self._out.close()
+                self._out = None
+            raise
 
     # ------------------------------------------------------------------
     # OpenMM reporter interface
@@ -610,7 +674,9 @@ class EnvsimReporter:
         """Compute and write the ENVIRONMENTSIMILARITY values for this frame."""
         if self._ids is None:
             self._ids = self._select_ids(simulation.topology)
-            if self._atom_out is not None and not self.append:
+            if self._atom_out is not None and (
+                not self.append or os.path.getsize(self._atom_path) == 0
+            ):
                 header = "time " + " ".join(
                     f"env.{i + 1}" for i in range(len(self._ids))
                 )
@@ -685,7 +751,13 @@ class EnvsimReporter:
     # ------------------------------------------------------------------
     def _select_ids(self, topology) -> np.ndarray:
         if self._group is not None:
-            return self._group.copy()
+            ids = self._group.copy()
+            n_atoms = topology.getNumAtoms()
+            if np.any(ids >= n_atoms):
+                raise ValueError("group contains atom indices outside the topology")
+            if len(np.unique(ids)) != len(ids):
+                raise ValueError("group contains duplicate atom indices")
+            return ids
 
         ids: list[int] = []
         for atom in topology.atoms():
@@ -720,64 +792,3 @@ class EnvsimReporter:
                 except Exception:
                     break
         return None
-
-
-def _pairs_triclinic_scaled(
-    positions: np.ndarray, box: np.ndarray, r_cut: float
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Triclinic neighbour pairs via a metric-scaled periodic KD-tree.
-
-    Fractional coordinates are scaled by the box-vector lengths, so the
-    periodic cell becomes an axis-aligned box that ``cKDTree`` can handle.
-    For a displacement ``df`` in fractional coordinates the real squared
-    distance is ``df @ (box @ box.T) @ df.T``.  With ``y = df * lengths``
-    this becomes ``y @ G' @ y.T`` where ``G' = G / (lengths outer lengths)``.
-    If ``lambda_min`` is the smallest eigenvalue of ``G'``, then
-    ``|d|^2 >= lambda_min * |y|^2``.  Querying the scaled KD-tree with
-    ``r_cut / sqrt(lambda_min)`` therefore returns a superset of the true
-    neighbours; the exact minimum-image distances are filtered afterwards.
-
-    This avoids materialising 27 copies of every atom.  For very skewed cells
-    the enlarged radius can approach the box size; in that case the function
-    falls back to the 27-image or brute-force implementation.
-    """
-    n = len(positions)
-    inv_box = np.linalg.inv(box)
-    frac = positions @ inv_box
-    frac -= np.floor(frac)
-
-    lengths = np.linalg.norm(box, axis=1)
-    metric = box @ box.T
-    scaled_metric = metric / np.outer(lengths, lengths)
-    lambda_min = float(np.linalg.eigvalsh(scaled_metric)[0])
-    if lambda_min <= 0.0:
-        return _pairs_triclinic(positions, box, r_cut)
-
-    r_query = r_cut / np.sqrt(lambda_min)
-    if r_query > 0.5 * float(lengths.min()):
-        if r_cut < float(_box_widths(box).min()):
-            return _pairs_triclinic(positions, box, r_cut)
-        return _pairs_bruteforce(positions, box, r_cut)
-
-    scaled = frac * lengths
-    tree = cKDTree(scaled, boxsize=lengths)
-    neighbours = tree.query_ball_point(
-        scaled, r_query, workers=-1, return_sorted=False
-    )
-
-    counts = np.fromiter((len(x) for x in neighbours), dtype=np.int64, count=n)
-    ci = np.repeat(np.arange(n, dtype=np.int64), counts)
-    if counts.sum():
-        cj = np.concatenate([np.asarray(x, dtype=np.int64) for x in neighbours])
-    else:
-        cj = np.empty(0, dtype=np.int64)
-
-    keep = ci < cj
-    ci, cj = ci[keep], cj[keep]
-
-    dfrac = frac[cj] - frac[ci]
-    dfrac -= np.round(dfrac)
-    d = dfrac @ box
-    r2 = np.einsum("ij,ij->i", d, d)
-    keep = r2 < r_cut * r_cut
-    return ci[keep], cj[keep], d[keep]
