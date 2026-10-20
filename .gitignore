@@ -1,0 +1,50 @@
+# ---------- 目录 ----------
+tests/
+# ---------- 其他 ----------
+ENVIRONMENTSIMILARITY_原理与实现计划.md
+244119_1_online.pdf
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ---------- 虚拟环境 ----------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ---------- 打包 / 分发 ----------
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ---------- 测试 / 覆盖率 ----------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ---------- 编辑器 / IDE ----------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---------- 操作系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 本项目：临时 / 草稿文件 ----------
+*.tmp
+*.log
+scratch_*.py
+test_scratch_*.py
