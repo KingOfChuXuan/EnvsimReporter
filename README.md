@@ -5,13 +5,31 @@ It evaluates the CV on report frames and writes the per-atom similarity, its
 mean, and the PLUMED `MORE_THAN` soft count `n_ice` used by the water
 phase-diagram workflow.
 
+## Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Parameters](#parameters)
+- [PLUMED input mapping](#plumed-input-mapping)
+- [Reference PDB files](#reference-pdb-files)
+- [Normalization](#normalization)
+- [Output files](#output-files)
+- [Performance](#performance)
+- [Validation](#validation)
+- [Notes](#notes)
+- [Repository layout](#repository-layout)
+- [References](#references)
+- [License](#license)
+- [Citation](#citation)
+
 ## Features
 
-- Reproduces PLUMED's `ENVIRONMENTSIMILARITY` kernel for water oxygen atoms.
+- Reproduces PLUMED's `ENVIRONMENTSIMILARITY` for water oxygen atoms, with
+  `CRYSTAL_STRUCTURE=CUSTOM` and multiple `REFERENCE_i` templates.
 - Reproduces the `MORE_THAN={RATIONAL R_0=... NN=8 MM=16}` soft count `n_ice`.
-- Uses `DISTANCE_MATRIX + CUSTOM` semantics from PLUMED 2.10, with the
-  orientation-dependent forward/backward kernel for every atom pair.
-- Evaluates only on report frames; the MD loop keeps its normal speed.
+- Evaluates on report frames; the MD loop keeps its normal speed.
 - Supports orthorhombic and triclinic periodic boxes.
 - Uses boundary ghost particles for triclinic neighbour search.
 - User-controlled `interval`, `r0`, reference environments and output paths.
@@ -29,7 +47,16 @@ MDAnalysis.
 
 ## Installation
 
-Copy `EnvsimReporter.py` next to your run script, or add this repository to
+This repository is a standalone module.
+
+Create the conda environment:
+
+```bash
+conda env create -f environment.yml
+conda activate envsim
+```
+
+Then copy `EnvsimReporter.py` next to your run script, or add this repository to
 `PYTHONPATH`:
 
 ```python
@@ -101,6 +128,8 @@ simulation.reporters.append(reporter)
 1000    1.000000   273.00           0.880697   393.284100
 2000    2.000000   273.00           0.875012   387.920300
 ```
+
+Example from a 432-oxygen box.
 
 Early stopping is handled by the driver:
 
@@ -219,6 +248,7 @@ ENDMDL
 ```
 
 The parser reads fixed PDB columns 31–54 and uses the first `MODEL`.
+Duplicate serial numbers are allowed.
 
 ## Normalization
 
@@ -282,12 +312,9 @@ At 100 ns/day (≈1.16 ps/s):
 Use `interval=1000` in production and `interval=100` for calibration.  For
 8000-oxygen systems, use `interval>=1000` (or `5000`).
 
-Triclinic cells use boundary ghost particles.  Atoms near a cell face receive
-the periodic images needed for the neighbour search; primary atoms and ghosts
-share one KD-tree.  For the ice-II cell, the neighbour search takes about
-2.8/5.5/29 ms for 432/1280/8000 oxygen atoms.
+Triclinic cells use boundary ghost particles for the neighbour search.
 
-Only positions are read from the `State`; the reporter computes on the CPU.
+The reporter reads positions from the `State` and computes on the CPU.
 
 ## Validation
 
@@ -312,13 +339,13 @@ Run the self-contained tests:
 python tests/test_pbc.py
 ```
 
-The DCD replay test is optional and reads data from `../phase_diagram`:
+The DCD replay test is optional and needs your own trajectory data; see
+`tests/validate_against_plumed.py` for the expected layout.  It skips
+automatically when the data or MDAnalysis is unavailable:
 
 ```bash
 python tests/validate_against_plumed.py
 ```
-
-It skips automatically when the data or MDAnalysis is unavailable.
 
 ## Notes
 
