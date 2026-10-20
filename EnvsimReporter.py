@@ -17,6 +17,10 @@ the values are combined with the soft-max
 
     k_i = (1/lambda) * log(sum_m exp(lambda * k_i^(m))).
 
+For equal-size reference environments (the water cases) this matches PLUMED.
+If template sizes differ, pass ``normalization='plumed'`` for exact PLUMED
+compatibility; the default ``per_reference`` is the self-normalized variant.
+
 If ``r0`` is given, the PLUMED ``MORE_THAN={RATIONAL R_0=r0 NN=nn MM=mm}`` soft
 count is also written as ``n_ice``.  This is the quantity used by the phase-diagram
 workflow.
@@ -182,6 +186,11 @@ def _pairs_triclinic(
     ``r_cut`` is smaller than the smallest perpendicular box width.
     """
     n = len(positions)
+    if r_cut >= float(_box_widths(box).min()):
+        raise ValueError(
+            "the 27-image triclinic search requires r_cut < the smallest "
+            "perpendicular box width"
+        )
     inv_box = np.linalg.inv(box)
     frac = positions @ inv_box
     frac -= np.floor(frac)  # fractional coordinates in [0, 1)
@@ -212,7 +221,7 @@ def _pairs_triclinic(
     d = flat_images[ck] - centres[ci]
     r2 = np.einsum("ij,ij->i", d, d)
 
-    keep = (r2 < r_cut * r_cut) & (cj != ci) & (ci < cj)
+    keep = (r2 <= r_cut * r_cut) & (cj != ci) & (ci < cj)
     ci, cj, d, r2 = ci[keep], cj[keep], d[keep], r2[keep]
 
     # A pair can appear through several periodic images.  Keep the closest one.
@@ -237,9 +246,18 @@ def _pairs_bruteforce(
     for orthorhombic boxes.
     """
     n = len(positions)
+    if n == 0:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, empty, np.empty((0, 3), dtype=np.float64)
     inv_box = np.linalg.inv(box)
     widths = _box_widths(box)
     n_shift = max(1, int(np.ceil(r_cut / float(widths.min()))))
+    if n_shift > 3:
+        raise ValueError(
+            "box is too small relative to r_cut for the O(N^2) fallback; "
+            "use a larger box or a smaller cutoff"
+        )
+    chunk = max(1, min(chunk, 2_000_000 // n))
     shifts = np.array(
         list(itertools.product(range(-n_shift, n_shift + 1), repeat=3)),
         dtype=np.float64,
@@ -270,7 +288,7 @@ def _pairs_bruteforce(
             best_r2[improve] = r2[improve]
             best_d[improve] = candidate[improve]
 
-        ii, jj = np.nonzero(best_r2 < cutoff2)
+        ii, jj = np.nonzero(best_r2 <= cutoff2)
         ii = ii + start
         keep = ii < jj
         ii, jj = ii[keep], jj[keep]
@@ -317,7 +335,7 @@ def compute_environment_similarity(
     normalization : {'per_reference', 'plumed'}
         ``per_reference`` divides each reference by its own atom count, which is
         the mathematically consistent generalization of the paper and gives
-        ``k(chi_l) = 1`` for every template.  ``plumed`` reproduces PLUMED's
+        ``k(chi_l)`` close to 1 (the diagonal term dominates).  ``plumed`` reproduces PLUMED's
         implementation, which divides every reference by the atom count of the
         *first* reference; the two are identical when all templates have the
         same number of atoms (the normal case).
@@ -341,6 +359,10 @@ def compute_environment_similarity(
         raise ValueError("positions contain non-finite values")
     if not np.all(np.isfinite(box)):
         raise ValueError("box_vectors contain non-finite values")
+    if abs(np.linalg.det(box)) < 1.0e-12:
+        raise ValueError(
+            "periodic box vectors with a non-zero volume are required"
+        )
     if not np.isfinite(sigma) or sigma <= 0.0:
         raise ValueError("sigma must be a positive finite number")
     if not np.isfinite(cutoff) or cutoff < 0.0:
@@ -451,40 +473,38 @@ def more_than_count(
 ) -> float:
     """PLUMED ``MORE_THAN={RATIONAL R_0=r0 NN=nn MM=mm}`` soft count.
 
-    The switching function is
+    PLUMED's ``MORE_THAN`` with the ``SWITCH={RATIONAL ...}`` string uses the
+    untruncated rational switch (``D_MAX`` defaults to infinity):
 
-        s(r) = (1 - r^nn) / (1 - r^mm),  r < r_max
-        s(r) = 0,                        r >= r_max
+        s(r) = (1 - r^nn) / (1 - r^mm),   r = value / r0
 
-    with ``r = value / r0`` and ``r_max = (1e-5)**(1/(nn-mm))``.  The returned
-    value is ``sum_i (1 - s(value_i / r0))``.  Note that ``s(1) = nn/mm = 0.5``,
-    so a value exactly at ``r0`` contributes 0.5, and values above ``r0`` still
-    contribute less than 1 (``s`` decays slowly up to ``r_max``).
+    with ``s(1) = nn/mm`` and ``s -> 0`` for large ``r``.  The returned value is
+    ``sum_i (1 - s(value_i / r0))``.  A value exactly at ``r0`` contributes
+    0.5; values above ``r0`` contribute a little less than 1 and approach 1
+    asymptotically.
     """
-    if r0 is None or r0 <= 0.0:
-        raise ValueError("r0 must be a positive number")
+    if r0 is None or not np.isfinite(r0) or r0 <= 0.0:
+        raise ValueError("r0 must be a positive finite number")
     if mm == 0:
         mm = 2 * nn
     if nn <= 0 or mm <= 0:
         raise ValueError("nn and mm must be positive (mm=0 means 2*nn)")
-    if nn == mm:
-        raise ValueError("nn and mm must be different")
+    if nn >= mm:
+        raise ValueError("nn must be smaller than mm")
 
     values = np.asarray(values, dtype=np.float64)
     if not np.all(np.isfinite(values)):
         raise ValueError("values contain non-finite entries")
-    r_max = (1.0e-5) ** (1.0 / (nn - mm))
-    r = values / r0
-    s = np.zeros_like(r)
-    mask = r < r_max
-    rr = r[mask]
-    near_one = np.abs(rr - 1.0) < 1.0e-12
-    result = np.empty_like(rr)
-    result[near_one] = nn / mm
-    if np.any(~near_one):
-        rr2 = rr[~near_one]
-        result[~near_one] = (1.0 - rr2**nn) / (1.0 - rr2**mm)
-    s[mask] = result
+
+    r = np.atleast_1d(values / r0)
+    s = np.empty_like(r)
+    near_one = np.abs(r - 1.0) < 1.0e-12
+    s[near_one] = nn / mm
+    other = ~near_one
+    with np.errstate(over="ignore", invalid="ignore"):
+        s[other] = (1.0 - r[other] ** nn) / (1.0 - r[other] ** mm)
+    # For very large r the ratio tends to 0; overflow -> nan.
+    s = np.nan_to_num(s, nan=0.0, posinf=0.0, neginf=0.0)
     return float(np.sum(1.0 - s))
 
 
@@ -495,7 +515,9 @@ class EnvsimReporter:
     ----------
     file : str, path-like or None
         Main output file.  If ``None``, the values are available as reporter
-        attributes after each report.
+        attributes after each report.  With ``file=None``, ``r0=None`` and no
+        per-atom path, the calibration file ``env_per_atom.dat`` is written in
+        the current directory.
     interval : int
         Report interval in MD steps.  This is user-controlled: use a small
         value (e.g. 100) while calibrating ``r0``, and a larger value (e.g.
@@ -520,10 +542,10 @@ class EnvsimReporter:
         all oxygen atoms of water residues are selected automatically.
     water_names : sequence of str
         Residue names used by the automatic oxygen selection.
-    per_atom_file : str, path-like or False
-        Per-atom output file.  ``False`` (default): the summary file only when
-        ``r0`` is given; in calibration mode (``r0=None``) the reporter always
-        writes a per-atom file.  Pass a path to choose its location.
+    per_atom_file : str, path-like, True or False
+        Per-atom output file.  ``False`` (default): summary only when ``r0`` is
+        given; in calibration mode (``r0=None``) a per-atom file is always
+        written.  ``True``: use the automatic name.  A path chooses the name.
     append : bool
         Extend existing files; headers are written for new files.
     time_unit : openmm.unit.Unit
@@ -568,8 +590,8 @@ class EnvsimReporter:
             raise ValueError("r0 must be a positive finite number or None")
         if mm == 0:
             mm = 2 * nn
-        if nn <= 0 or mm <= 0 or nn == mm:
-            raise ValueError("nn and mm must be positive and different")
+        if nn <= 0 or mm <= 0 or nn >= mm:
+            raise ValueError("nn must be positive and smaller than mm")
         if not isinstance(time_unit, Unit) or not time_unit.is_compatible(second):
             raise TypeError(
                 "time_unit must be an openmm.unit time unit, e.g. nanosecond "
@@ -599,6 +621,8 @@ class EnvsimReporter:
                 raise ValueError("group must be a non-empty 1-D sequence of atom indices")
             if np.any(self._group < 0):
                 raise ValueError("group indices must be non-negative (0-based)")
+            if len(np.unique(self._group)) != len(self._group):
+                raise ValueError("group contains duplicate atom indices")
         if isinstance(water_names, str):
             water_names = (water_names,)
         self.water_names = tuple(water_names)
@@ -613,18 +637,19 @@ class EnvsimReporter:
         # env.N; otherwise it is written only when a path is supplied.
         if per_atom_file is None:
             per_atom_file = False
-        if per_atom_file is True:
-            raise TypeError("per_atom_file must be a path or False")
-        if self.r0 is None and per_atom_file is False:
+        if not isinstance(per_atom_file, (bool, str, os.PathLike)):
+            raise TypeError("per_atom_file must be a path, True or False")
+        if per_atom_file is False and self.r0 is not None:
+            atom_path = None
+        elif isinstance(per_atom_file, (str, os.PathLike)):
+            atom_path = os.fspath(per_atom_file)
+        else:
+            # True, or False in calibration mode: use the automatic name.
             if file is not None:
                 root, ext = os.path.splitext(os.fspath(file))
                 atom_path = root + "_env" + (ext or ".dat")
             else:
                 atom_path = "env_per_atom.dat"
-        elif per_atom_file is False:
-            atom_path = None
-        else:
-            atom_path = os.fspath(per_atom_file)
 
         if atom_path is not None and file is not None:
             if os.path.abspath(atom_path) == os.path.abspath(os.fspath(file)):
@@ -708,13 +733,13 @@ class EnvsimReporter:
         self.n_ice = n_ice
 
         time_out = state.getTime().value_in_unit(self.time_unit)
-        temperature = self._get_temperature(simulation)
 
         if self._out is not None:
+            temperature = self._get_temperature(simulation)
             parts = [
                 str(simulation.currentStep),
                 f"{time_out:.6f}",
-                "\\" if temperature is None else f"{temperature:.2f}",
+                "nan" if temperature is None else f"{temperature:.2f}",
                 f"{self.env_mean:.6f}",
             ]
             if n_ice is not None:
@@ -755,8 +780,6 @@ class EnvsimReporter:
             n_atoms = topology.getNumAtoms()
             if np.any(ids >= n_atoms):
                 raise ValueError("group contains atom indices outside the topology")
-            if len(np.unique(ids)) != len(ids):
-                raise ValueError("group contains duplicate atom indices")
             return ids
 
         ids: list[int] = []

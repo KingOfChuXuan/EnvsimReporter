@@ -128,7 +128,7 @@ To extend existing files after a restart, pass `append=True`.
 | `nn`, `mm` | `8`, `16` | PLUMED `MORE_THAN={RATIONAL ...}` (mm=0 means 2*nn) |
 | `group` | `None` | 0-based atom indices; default = O atoms of water residues |
 | `water_names` | `('HOH','WAT','SOL','TIP3','TIP3P','SPC','SPCE')` | residue names for automatic O selection |
-| `per_atom_file` | `False` | `False`: summary file when `r0` is given, forced `env.N` when `r0=None`; path: write there |
+| `per_atom_file` | `False` | `False`: summary file when `r0` is given, forced `env.N` when `r0=None`; `True`: automatic name; path: write there |
 | `append` | `False` | extend existing files |
 | `time_unit` | `nanosecond` | `openmm.unit.Unit` for the time column, e.g. `nanosecond` or `picosecond` |
 | `normalization` | `'per_reference'` | `'per_reference'` (correct) or `'plumed'` (PLUMED's first-reference convention) |
@@ -263,7 +263,7 @@ Tab-separated, one row per report:
 ```
 
 - `Time(ns)`: default `nanosecond`; pass `time_unit=picosecond` to match PLUMED colvar exactly.
-- `Temperature(K)`: from `integrator.getTemperature()`; if unavailable, `\`.
+- `Temperature(K)`: from `integrator.getTemperature()`; if unavailable, `nan`.
 - `n_ice`: written when `r0` is given.
 - The first row is written at the first report interval (step = `interval`); PLUMED's
   `colvar` can include a step-0 row.
@@ -283,7 +283,9 @@ time env.1 env.2 ... env.N
 - `env.i` follows the order of the selected atoms (the same order as `reporter._ids`
   / the `group` you passed).  For the default selection this is the order of the
   oxygen atoms in the topology.
-- Written when `r0 is None` (automatic) or when `per_atom_file` is explicitly given.
+- Written when `r0 is None` (automatic / forced) or when `per_atom_file` is `True` or a path.
+- With `file=None`, `r0=None` and `per_atom_file=False`, the automatic name is
+  `env_per_atom.dat` in the current directory.
 
 ---
 
@@ -349,8 +351,8 @@ python tests/validate_against_plumed.py
 
 1. **`n_ice` uses the RATIONAL switch.**  The phase-diagram thresholds calibrated
    with PLUMED (`60/640`, etc.) assume this definition.  A value exactly at `R_0`
-   contributes 0.5, and values above `R_0` contribute less than 1 until
-   `r = (1e-5)^(1/(NN-MM)) * R_0` (≈4.217 R0 for NN=8, MM=16).
+   contributes 0.5; values above `R_0` contribute less than 1 and approach 1
+   asymptotically (`r -> infinity`).
 2. **The CV is orientation-dependent.**  The kernel uses the vector components
    `(x, y, z)`; the four Ih references cover four orientations, so keep all of
    them.
