@@ -49,3 +49,6 @@ env*.dat
 # Local test data / scratch experiments
 tests/mytest/
 tests/3_1_test_n_ice_ice.py
+
+# Local tool cache
+.sentry-native/
