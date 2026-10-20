@@ -21,7 +21,7 @@ phase-diagram workflow.
 - Python 3.9 or newer
 - NumPy
 - SciPy
-- OpenMM
+- OpenMM 8.2 or newer (tested with 8.5.2)
 
 A ready-to-use conda environment is provided in `environment.yml`.  OpenMM is
 distributed through conda-forge.  The optional DCD replay test additionally uses

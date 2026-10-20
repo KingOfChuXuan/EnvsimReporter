@@ -19,6 +19,6 @@ jobs:
           channel-priority: strict
           activate-environment: envsim
       - name: Install dependencies
-        run: conda install -y openmm numpy scipy
+        run: conda install -y 'openmm>=8.2' numpy scipy
       - name: Run self-contained tests
         run: python tests/test_pbc.py

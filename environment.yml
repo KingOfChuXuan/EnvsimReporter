@@ -5,6 +5,6 @@ dependencies:
   - python>=3.9
   - numpy
   - scipy
-  - openmm
+  - openmm>=8.2
   # Optional: needed only for replaying existing DCD trajectories in the tests.
   - mdanalysis
