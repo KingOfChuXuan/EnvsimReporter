@@ -139,8 +139,6 @@ def _box_widths(box: np.ndarray) -> np.ndarray:
         ],
         dtype=np.float64,
     )
-    if np.any(widths <= 0.0):
-        raise ValueError("periodic box vectors are degenerate")
     return widths
 
 
@@ -321,6 +319,7 @@ def compute_environment_similarity(
     lam: float = 100.0,
     normalization: str = "per_reference",
     neighbor_method: str = "auto",
+    validate: bool = True,
 ) -> np.ndarray:
     """Compute the per-atom ENVIRONMENTSIMILARITY kernel.
 
@@ -348,6 +347,9 @@ def compute_environment_similarity(
         same number of atoms (the normal case).
     neighbor_method : {'auto', 'orthorhombic', 'triclinic', 'bruteforce'}
         Neighbour-search implementation.  ``auto`` picks the fastest safe one.
+    validate : bool
+        Validate positions/parameters/references.  The reporter validates its
+        static parameters once and passes ``False`` on the per-frame path.
 
     Returns
     -------
@@ -362,22 +364,23 @@ def compute_environment_similarity(
         raise ValueError("box_vectors must have shape (3, 3)")
     if len(pos) == 0:
         raise ValueError("positions is empty")
-    if not np.all(np.isfinite(pos)):
-        raise ValueError("positions contain non-finite values")
     if not np.all(np.isfinite(box)):
         raise ValueError("box_vectors contain non-finite values")
     if abs(np.linalg.det(box)) < 1.0e-12:
         raise ValueError(
             "periodic box vectors with a non-zero volume are required"
         )
-    if not np.isfinite(sigma) or sigma <= 0.0:
-        raise ValueError("sigma must be a positive finite number")
-    if not np.isfinite(cutoff) or cutoff < 0.0:
-        raise ValueError("cutoff must be a non-negative finite number")
-    if not np.isfinite(lam) or lam <= 0.0:
-        raise ValueError("lam must be a positive finite number")
-    if normalization not in ("per_reference", "plumed"):
-        raise ValueError("normalization must be 'per_reference' or 'plumed'")
+    if validate:
+        if not np.all(np.isfinite(pos)):
+            raise ValueError("positions contain non-finite values")
+        if not np.isfinite(sigma) or sigma <= 0.0:
+            raise ValueError("sigma must be a positive finite number")
+        if not np.isfinite(cutoff) or cutoff < 0.0:
+            raise ValueError("cutoff must be a non-negative finite number")
+        if not np.isfinite(lam) or lam <= 0.0:
+            raise ValueError("lam must be a positive finite number")
+        if normalization not in ("per_reference", "plumed"):
+            raise ValueError("normalization must be 'per_reference' or 'plumed'")
 
     refs = [np.asarray(ref, dtype=np.float64) for ref in references]
     if not refs:
@@ -385,7 +388,7 @@ def compute_environment_similarity(
     for ref in refs:
         if ref.ndim != 2 or ref.shape[1] != 3 or len(ref) == 0:
             raise ValueError("each reference must have shape (n, 3) with n > 0")
-        if not np.all(np.isfinite(ref)):
+        if validate and not np.all(np.isfinite(ref)):
             raise ValueError("reference environments contain non-finite values")
 
     sizes = np.array([len(ref) for ref in refs], dtype=np.float64)
@@ -411,10 +414,13 @@ def compute_environment_similarity(
     r_cut = max_ref_norm + cutoff * sigma
 
     method = neighbor_method
+    min_width = None
+    if method in ("auto", "triclinic"):
+        min_width = float(_box_widths(box).min())
     if method == "auto":
         if _is_orthorhombic(box):
             method = "orthorhombic"
-        elif r_cut < float(_box_widths(box).min()):
+        elif r_cut < min_width:
             method = "triclinic"
         else:
             warnings.warn(
@@ -431,7 +437,7 @@ def compute_environment_similarity(
             )
         ci, cj, d = _pairs_orthorhombic(pos, box, r_cut)
     elif method == "triclinic":
-        if r_cut >= float(_box_widths(box).min()):
+        if neighbor_method != "auto" and r_cut >= min_width:
             warnings.warn(
                 "the 27-image triclinic search requires r_cut < the smallest "
                 "box width; falling back to the O(N^2) search",
@@ -475,6 +481,22 @@ def compute_environment_similarity(
     return vmax + np.log(np.exp(lam * (values - vmax)).sum(axis=0)) / lam
 
 
+def _more_than_count_unchecked(
+    values: np.ndarray, r0: float, nn: int, mm: int
+) -> float:
+    """Soft count for already-normalized, already-validated parameters."""
+    r = np.atleast_1d(np.asarray(values, dtype=np.float64) / r0)
+    s = np.empty_like(r)
+    near_one = np.abs(r - 1.0) < 1.0e-12
+    s[near_one] = nn / mm
+    other = ~near_one
+    with np.errstate(over="ignore", invalid="ignore"):
+        s[other] = (1.0 - r[other] ** nn) / (1.0 - r[other] ** mm)
+    # For very large r the ratio tends to 0; overflow -> nan.
+    s = np.nan_to_num(s, nan=0.0, posinf=0.0, neginf=0.0)
+    return float(np.sum(1.0 - s))
+
+
 def more_than_count(
     values: np.ndarray, r0: float, nn: int = 8, mm: int = 16
 ) -> float:
@@ -502,17 +524,7 @@ def more_than_count(
     values = np.asarray(values, dtype=np.float64)
     if not np.all(np.isfinite(values)):
         raise ValueError("values contain non-finite entries")
-
-    r = np.atleast_1d(values / r0)
-    s = np.empty_like(r)
-    near_one = np.abs(r - 1.0) < 1.0e-12
-    s[near_one] = nn / mm
-    other = ~near_one
-    with np.errstate(over="ignore", invalid="ignore"):
-        s[other] = (1.0 - r[other] ** nn) / (1.0 - r[other] ** mm)
-    # For very large r the ratio tends to 0; overflow -> nan.
-    s = np.nan_to_num(s, nan=0.0, posinf=0.0, neginf=0.0)
-    return float(np.sum(1.0 - s))
+    return _more_than_count_unchecked(values, r0, nn, mm)
 
 
 class EnvsimReporter:
@@ -732,11 +744,16 @@ class EnvsimReporter:
             cutoff=self.cutoff,
             lam=self.lam,
             normalization=self.normalization,
+            validate=False,
         )
 
         self.env = env
         self.env_mean = float(env.mean())
-        n_ice = None if self.r0 is None else more_than_count(env, self.r0, self.nn, self.mm)
+        n_ice = (
+            None
+            if self.r0 is None
+            else _more_than_count_unchecked(env, self.r0, self.nn, self.mm)
+        )
         self.n_ice = n_ice
 
         try:
