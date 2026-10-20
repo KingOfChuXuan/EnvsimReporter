@@ -314,9 +314,10 @@ At 100 ns/day (≈1.16 ps/s):
 
 Use `interval=1000` in production and `interval=100` for calibration.  For
 8000-oxygen systems, use `interval>=1000` (or `5000`) to keep the overhead small.
-Triclinic cells use the 27-image minimum-image search.  When `r_cut` is not
-smaller than the smallest box width, the reporter falls back to an O(N²) search
-that explicitly enumerates periodic images.
+Triclinic cells use boundary ghost particles: only atoms near a cell face get
+periodic images, and the primary atoms plus their ghosts share one KD-tree.
+When `r_cut` is not smaller than the smallest box width, the reporter falls back
+to an O(N²) search that explicitly enumerates periodic images.
 
 The State request contains positions; the reporter computes the values on the CPU
 and leaves forces, energies and velocities in the simulation.
