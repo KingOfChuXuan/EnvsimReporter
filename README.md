@@ -1,5 +1,7 @@
 # EnvsimReporter
 
+[![tests](https://github.com/KingOfChuXuan/EnvsimReporter/actions/workflows/tests.yml/badge.svg)](https://github.com/KingOfChuXuan/EnvsimReporter/actions/workflows/tests.yml)
+
 An OpenMM reporter for PLUMED's `ENVIRONMENTSIMILARITY` collective variable.
 It evaluates the CV on report frames and writes the per-atom similarity, its
 mean, and the PLUMED `MORE_THAN` soft count `n_ice` used by the water
@@ -342,6 +344,9 @@ Run the self-contained tests:
 python tests/test_pbc.py
 ```
 
+CI runs this test on Python 3.9 and 3.11 (see
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
+
 The DCD replay test is optional and needs your own trajectory data.  Pass the
 directory that contains the `Ih/` and `II/` datasets; the exact filenames are
 listed in the `datasets` table inside the script.  It skips automatically when
@@ -381,6 +386,7 @@ environment.yml                   conda environment
 CITATION.cff                      citation metadata
 LICENSE                           MIT license
 .github/workflows/tests.yml       GitHub Actions unit tests
+.github/workflows/release.yml     tag-triggered GitHub release
 ```
 
 ## References

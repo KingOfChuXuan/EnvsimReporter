@@ -6,7 +6,12 @@ on:
 
 jobs:
   unit-tests:
+    name: unit-tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
     defaults:
       run:
         shell: bash -el {0}
@@ -14,11 +19,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: conda-incubator/setup-miniconda@v3
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           channels: conda-forge
           channel-priority: strict
           activate-environment: envsim
       - name: Install dependencies
         run: conda install -y 'openmm>=8.2' numpy scipy
+      - name: Show dependency versions
+        run: python -c "import sys, openmm, numpy, scipy; print(sys.version); print('openmm', openmm.__version__); print('numpy', numpy.__version__); print('scipy', scipy.__version__)"
       - name: Run self-contained tests
         run: python tests/test_pbc.py
